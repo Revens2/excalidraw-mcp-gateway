@@ -26,7 +26,12 @@ from starlette.routing import Route
 
 from excalidraw_gateway.app import construire_application
 from excalidraw_gateway.oauth import hacher_phrase
-from excalidraw_gateway.politique import OUTILS_ECRITURE, OUTILS_LECTURE
+from excalidraw_gateway.politique import (
+    OUTILS_BIBLIO_ECRITURE,
+    OUTILS_BIBLIO_LECTURE,
+    OUTILS_ECRITURE,
+    OUTILS_LECTURE,
+)
 from excalidraw_gateway.upstream import classer_ere
 
 EMETTEUR = "https://tasks.example.test"
@@ -246,7 +251,7 @@ def test_notification_inconnue_relayee(environ):
     _executer(scenario)
 
 
-@pytest.mark.parametrize("outil", sorted(OUTILS_ECRITURE))
+@pytest.mark.parametrize("outil", sorted(OUTILS_ECRITURE | OUTILS_BIBLIO_ECRITURE))
 def test_moderne_ecriture_refusee_en_lecture_meme_si_mcp_name_ment(environ, outil):
     """La politique lit le CORPS ; un Mcp-Name mensonger ne donne aucun droit."""
 
@@ -274,7 +279,7 @@ def test_liste_moderne_filtree_cache_prive(environ):
         r = await c.post("/mcp", content=json.dumps(_rpc("tools/list", {"_meta": META})),
                          headers=_base(JETON_LECTURE, **{"mcp-protocol-version": MODERNE, "mcp-method": "tools/list"}))
         res = r.json()["result"]
-        assert {t["name"] for t in res["tools"]} == set(OUTILS_LECTURE)
+        assert {t["name"] for t in res["tools"]} == set(OUTILS_LECTURE) | set(OUTILS_BIBLIO_LECTURE)
         assert res["resultType"] == "complete"
         assert res["cacheScope"] == "private" and res["ttlMs"] == 0
 
@@ -302,7 +307,7 @@ def test_liste_sse_variantes_filtrees(environ, gabarit):
         for ligne in donnees:
             charge = json.loads(ligne[5:].strip())
             noms |= {t["name"] for t in charge["result"]["tools"]}
-        assert noms == set(OUTILS_LECTURE)
+        assert noms == set(OUTILS_LECTURE) | set(OUTILS_BIBLIO_LECTURE)
 
     _executer(scenario, reponse_liste=(sse, "text/event-stream"), jeton=JETON_LECTURE, portees="excalidraw:lecture")
 

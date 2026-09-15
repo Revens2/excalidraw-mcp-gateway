@@ -44,7 +44,16 @@ from mcp_types.version import (
     MODERN_PROTOCOL_VERSIONS,
 )
 
-from excalidraw_gateway.politique import PolitiqueOutils
+from excalidraw_gateway import bibliotheque
+from excalidraw_gateway.bibliotheque import ErreurBibliotheque
+from excalidraw_gateway.outils_locaux import (
+    PARAM_PERSISTANCE,
+    extraire_checkpoint_id,
+    fusionner_definitions,
+    lire_checkpoint_elements,
+    traiter_outil_local,
+)
+from excalidraw_gateway.politique import OUTILS_LOCAUX, PolitiqueOutils
 
 # Journalisation minimale et structuree des echecs de relais : la classe reelle
 # de l'exception httpx (ConnectError, ConnectTimeout, ReadTimeout, PoolTimeout,
@@ -299,12 +308,35 @@ def _message_jsonrpc_lisible(donnees: Any) -> bool:
     return isinstance(donnees, dict) and ("result" in donnees or "error" in donnees)
 
 
+def _enveloppe_outil(corps: bytes, content_type: str) -> dict | None:
+    """Parse une reponse tools/call (JSON nu ou enveloppe SSE) ; None si illisible."""
+    try:
+        if "text/event-stream" in content_type.lower():
+            texte = b"\n".join(
+                ligne[5:].lstrip() if ligne.startswith(b"data:") else b""
+                for ligne in corps.split(b"\n")
+                if ligne.startswith(b"data:")
+            )
+            enveloppe = json.loads(texte)
+        else:
+            enveloppe = json.loads(corps)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return enveloppe if isinstance(enveloppe, dict) else None
+
+
 class ProxyMCP:
     """Endpoint ASGI : /mcp authentifie (par le middleware) puis relaye vers l'upstream."""
 
-    def __init__(self, base_url: str, politique: PolitiqueOutils | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        politique: PolitiqueOutils | None = None,
+        base_ouverture: str = "",
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._politique = politique or PolitiqueOutils()
+        self._base_ouverture = base_ouverture.rstrip("/")
         self._client: httpx.AsyncClient | None = None
 
     def _http(self) -> httpx.AsyncClient:
@@ -461,7 +493,10 @@ class ProxyMCP:
         resultat = donnees.get("result")
         if not isinstance(resultat, dict) or not isinstance(resultat.get("tools"), list):
             return corps, True
-        if not self._appliquer(resultat, visibles):
+        # Bibliotheque distante : les outils locaux sont annonces ici (puis
+        # filtres par portees comme les outils upstream).
+        fusion = fusionner_definitions(resultat)
+        if not (self._appliquer(resultat, visibles) or fusion):
             return corps, True
         return json.dumps(donnees, ensure_ascii=False).encode(), True
 
@@ -505,7 +540,8 @@ class ProxyMCP:
             resultat = donnees.get("result")
             if not isinstance(resultat, dict) or not isinstance(resultat.get("tools"), list):
                 continue
-            if self._appliquer(resultat, visibles):
+            fusion = fusionner_definitions(resultat)
+            if self._appliquer(resultat, visibles) or fusion:
                 lignes[donnees_idx[0]] = b"data: " + json.dumps(donnees, ensure_ascii=False).encode()
                 for i in donnees_idx[1:]:
                     lignes[i] = None
@@ -523,6 +559,136 @@ class ProxyMCP:
         if "application/json" in content_type.lower():
             return self._filtrer_json(corps, visibles)
         return corps, False
+
+    # --- bibliotheque distante (outils locaux + create_view persistant) ---------------
+    async def _servir_outil_local(
+        self, send: Send, id_rpc: Any, nom: str, args: dict[str, Any]
+    ) -> None:
+        """Execute un outil `library_*` : l'upstream n'est jamais contacte."""
+        from excalidraw_gateway.outils_locaux import ContexteLocal
+
+        ctx = ContexteLocal(upstream=self._base_url, base_ouverture=self._base_ouverture)
+        try:
+            resultat = await traiter_outil_local(nom, args, ctx, self._http())
+        except ErreurBibliotheque as exc:
+            compter("biblio_refus", nom[:48])
+            resultat = {
+                "content": [{"type": "text", "text": f"{nom} : {exc}"}],
+                "isError": True,
+            }
+        except Exception as exc:  # garde-fou : jamais de fuite de pile au client
+            compter("biblio_erreur", nom[:48])
+            _journal.warning("outil local %s en echec: %s", nom, exc.__class__.__name__)
+            await self._repondre_erreur_jsonrpc(
+                send, id_rpc, _CODE_INTERNE, f"{nom} : echec local ({exc.__class__.__name__})"
+            )
+            return
+        compter("biblio_appel_local", nom[:48])
+        await _envoyer_reponse_json(
+            send, 200, {"jsonrpc": "2.0", "id": id_rpc, "result": resultat}
+        )
+
+    async def _create_view_persistant(
+        self,
+        send: Send,
+        donnees: dict[str, Any],
+        url: str,
+        entetes: dict[str, str],
+        args: dict[str, Any],
+    ) -> None:
+        """Relaye create_view vers l'upstream puis persiste le diagramme genere.
+
+        En cas d'echec de la persistance, la reponse de rendu upstream est
+        renvoyee TELLE QUELLE : le dessin n'est jamais perdu.
+        """
+        id_rpc = donnees.get("id")
+        try:
+            rel = bibliotheque.normaliser_relatif(
+                str(args.get(PARAM_PERSISTANCE)).strip(), fichier=True
+            )
+        except ErreurBibliotheque as exc:
+            compter("biblio_refus", "create_view.enregistrer_sous")
+            await self._repondre_erreur_jsonrpc(
+                send, id_rpc, _CODE_ERREUR_AUTORISATION, f"enregistrer_sous : {exc}"
+            )
+            return
+        params_amont = dict(donnees.get("params") or {})
+        params_amont["arguments"] = {
+            k: v for k, v in args.items() if k != PARAM_PERSISTANCE
+        }
+        corps_amont = json.dumps(
+            {"jsonrpc": "2.0", "id": id_rpc, "method": "tools/call", "params": params_amont},
+            ensure_ascii=False,
+        ).encode()
+        try:
+            requete = self._http().build_request("POST", url, headers=entetes, content=corps_amont)
+            reponse = await self._http().send(requete, stream=True)
+        except httpx.HTTPError as exc:
+            _journal.warning(
+                "relais create_view persistant en echec: %s (reponse 502)",
+                exc.__class__.__name__,
+            )
+            await _envoyer_reponse_json(
+                send, 502,
+                {"jsonrpc": "2.0",
+                 "error": {"code": -32000, "message": f"upstream indisponible: {exc.__class__.__name__}"},
+                 "id": None},
+            )
+            return
+        try:
+            corps_reponse = await reponse.aread()
+            ctype = reponse.headers.get("content-type", "") or ""
+            statut = reponse.status_code
+            entetes_rep = reponse.headers
+        finally:
+            await reponse.aclose()
+        enveloppe = _enveloppe_outil(corps_reponse, ctype)
+        resultat = enveloppe.get("result") if isinstance(enveloppe, dict) else None
+        if not isinstance(resultat, dict):
+            compter("biblio_persistance_echec", "reponse-illisible")
+            await _envoyer_corps(send, statut, entetes_rep, corps_reponse)
+            return
+        checkpoint = extraire_checkpoint_id(resultat)
+        if checkpoint is None:
+            compter("biblio_persistance_echec", "sans-checkpoint")
+            await _envoyer_corps(send, statut, entetes_rep, corps_reponse)
+            return
+        try:
+            elements = await lire_checkpoint_elements(self._http(), self._base_url, checkpoint)
+            document = bibliotheque.construire_document(elements)
+            bibliotheque.enregistrer(rel, document)
+        except (ErreurBibliotheque, RuntimeError, httpx.HTTPError, OSError) as exc:
+            compter("biblio_persistance_echec", exc.__class__.__name__[:48])
+            await _envoyer_corps(send, statut, entetes_rep, corps_reponse)
+            return
+        base = self._base_ouverture or "https://mymcps.duckdns.org"
+        url_ouverture = f"{base}/excalidraw/bibliotheque#/{rel}"
+        ligne = (
+            f"\nFichier enregistre : Excalidraw/{rel} ({len(elements)} elements).\n"
+            f"Ouvrir dans Excalidraw : {url_ouverture}"
+        )
+        contenu = resultat.get("content")
+        if (
+            isinstance(contenu, list) and contenu
+            and isinstance(contenu[0], dict) and isinstance(contenu[0].get("text"), str)
+        ):
+            contenu[0]["text"] = contenu[0]["text"] + ligne
+        else:
+            resultat["content"] = [{"type": "text", "text": "Diagramme affiche." + ligne}]
+        structure = resultat.get("structuredContent")
+        if isinstance(structure, dict):
+            structure.update({"fichier": f"Excalidraw/{rel}", "url_ouverture": url_ouverture})
+        else:
+            resultat["structuredContent"] = {
+                "fichier": f"Excalidraw/{rel}", "url_ouverture": url_ouverture,
+            }
+        enveloppe["result"] = resultat
+        if "text/event-stream" in ctype.lower():
+            nouveau = b"data: " + json.dumps(enveloppe, ensure_ascii=False).encode() + b"\n\n"
+        else:
+            nouveau = json.dumps(enveloppe, ensure_ascii=False).encode()
+        compter("biblio_persistance", rel[:64])
+        await _envoyer_corps(send, statut, entetes_rep, nouveau)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -569,6 +735,24 @@ class ProxyMCP:
             methode_rpc = donnees.get("method") if isinstance(donnees, dict) else methode
             compter("rabaissement_ere", f"{version}->{version_relayee} {str(methode_rpc)[:32]}")
 
+        if isinstance(donnees, dict) and donnees.get("method") == "tools/call":
+            params = donnees.get("params") if isinstance(donnees.get("params"), dict) else {}
+            nom_outil = params.get("name") if isinstance(params, dict) else None
+            args_outil = params.get("arguments") if isinstance(params, dict) else None
+            if not isinstance(args_outil, dict):
+                args_outil = {}
+            # Outils locaux : autorises par _decider, executes ici (upstream jamais contacte).
+            if isinstance(nom_outil, str) and nom_outil in OUTILS_LOCAUX:
+                await self._servir_outil_local(send, donnees.get("id"), nom_outil, args_outil)
+                return
+            # create_view + enregistrer_sous : relais puis persistance du checkpoint genere.
+            if (
+                nom_outil == "create_view"
+                and isinstance(args_outil.get(PARAM_PERSISTANCE), str)
+                and args_outil[PARAM_PERSISTANCE].strip()
+            ):
+                await self._create_view_persistant(send, donnees, url, _entetes(bruts, version_relayee), args_outil)
+                return
         entetes = _entetes(bruts, version_relayee)
         identite = self._identite(scope)
         if identite:

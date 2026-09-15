@@ -32,7 +32,13 @@ from starlette.routing import Route
 
 from excalidraw_gateway.app import construire_application
 from excalidraw_gateway.oauth import PORTEE, hacher_phrase
-from excalidraw_gateway.politique import OUTILS_ECRITURE, OUTILS_LECTURE, PolitiqueOutils
+from excalidraw_gateway.politique import (
+    OUTILS_BIBLIO_ECRITURE,
+    OUTILS_BIBLIO_LECTURE,
+    OUTILS_ECRITURE,
+    OUTILS_LECTURE,
+    PolitiqueOutils,
+)
 
 EMETTEUR = "https://tasks.example.test"
 JETON_LECTURE = "l" * 40
@@ -378,7 +384,7 @@ def test_lecture_seul_peut_appeler_outil_lecture(environ):
     _courir(_t())
 
 
-@pytest.mark.parametrize("outil", sorted(OUTILS_ECRITURE))
+@pytest.mark.parametrize("outil", sorted(OUTILS_ECRITURE | OUTILS_BIBLIO_ECRITURE))
 def test_lecture_seul_refuse_toute_mutation(environ, outil):
     """P0 : un jeton excalidraw:lecture ne peut executer AUCUNE mutation, meme en
     forgeant directement tools/call avec le nom exact d'un outil d'ecriture.
@@ -440,7 +446,7 @@ def test_lecture_seul_liste_filtre_aussi_en_sse(environ):
                 assert r.status_code == 200
                 assert "text/event-stream" in r.headers.get("content-type", "")
                 noms = {t["name"] for t in _reponse_json_rpc(r)["result"]["tools"]}
-                assert noms == set(OUTILS_LECTURE), noms
+                assert noms == set(OUTILS_LECTURE) | set(OUTILS_BIBLIO_LECTURE), noms
         finally:
             serveur.should_exit = True
             if _socket_ecoute:
@@ -466,7 +472,7 @@ def test_lecture_seul_liste_uniquement_les_outils_lecture(environ):
                 )
                 assert r.status_code == 200
                 noms = {t["name"] for t in r.json()["result"]["tools"]}
-                assert noms == set(OUTILS_LECTURE), noms
+                assert noms == set(OUTILS_LECTURE) | set(OUTILS_BIBLIO_LECTURE), noms
                 assert not (noms & set(OUTILS_ECRITURE))
                 assert "outil-upstream-inconnu" not in noms
         finally:
@@ -521,7 +527,10 @@ def test_ecriture_liste_lecture_et_ecriture_mais_pas_inconnu(environ):
                 )
                 assert r.status_code == 200
                 noms = {t["name"] for t in r.json()["result"]["tools"]}
-                assert noms == set(OUTILS_LECTURE) | set(OUTILS_ECRITURE), noms
+                assert noms == (
+                    set(OUTILS_LECTURE) | set(OUTILS_ECRITURE)
+                    | set(OUTILS_BIBLIO_LECTURE) | set(OUTILS_BIBLIO_ECRITURE)
+                ), noms
                 assert "outil-upstream-inconnu" not in noms
         finally:
             serveur.should_exit = True
@@ -649,8 +658,11 @@ def test_politique_visible_et_refus(environ):
     full = {politique.portee_lecture, politique.portee_ecriture}
 
     # visibilite
-    assert politique.visibles(lecture) == set(OUTILS_LECTURE)
-    assert politique.visibles(full) == set(OUTILS_LECTURE) | set(OUTILS_ECRITURE)
+    assert politique.visibles(lecture) == set(OUTILS_LECTURE) | set(OUTILS_BIBLIO_LECTURE)
+    assert politique.visibles(full) == (
+        set(OUTILS_LECTURE) | set(OUTILS_ECRITURE)
+        | set(OUTILS_BIBLIO_LECTURE) | set(OUTILS_BIBLIO_ECRITURE)
+    )
     assert politique.visibles(set()) == set()
 
     # appels

@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bibliothèque Excalidraw</title>
+<style>
+:root { color-scheme: light; }
+body { font-family: system-ui, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; }
+header { padding: 8px 12px; background: #1e1e2e; color: #fff; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+header input[type=password] { width: 280px; }
+main { display: flex; flex: 1; min-height: 0; }
+aside { width: 300px; border-right: 1px solid #ccc; overflow: auto; padding: 8px; }
+#editeur { flex: 1; min-width: 0; position: relative; }
+#editeur .excalidraw-wrapper { height: 100%; }
+button { cursor: pointer; }
+.dossier { font-weight: bold; cursor: pointer; }
+.fichier { cursor: pointer; padding: 2px 4px; }
+.fichier.actif { background: #dbe4ff; }
+#statut { font-size: 0.85em; opacity: 0.85; }
+#repli { display: none; height: 100%; box-sizing: border-box; padding: 8px; flex-direction: column; gap: 8px; }
+#repli textarea { flex: 1; font-family: monospace; }
+.toolbar { display: flex; gap: 8px; padding: 8px; border-bottom: 1px solid #ccc; flex-wrap: wrap; align-items: center;}
+</style>
+<script type="importmap">
+{"imports": {
+"react": "https://esm.sh/react@19.1.0",
+"react-dom": "https://esm.sh/react-dom@19.1.0",
+"react-dom/client": "https://esm.sh/react-dom@19.1.0/client",
+"react/jsx-runtime": "https://esm.sh/react@19.1.0/jsx-runtime",
+"@excalidraw/excalidraw": "https://esm.sh/@excalidraw/excalidraw@0.18.0?external=react,react-dom"
+}}
+</script>
+</head>
+<body>
+<header>
+<b>Bibliothèque Excalidraw</b>
+<span id="statut">racine Excalidraw</span>
+<span style="flex:1"></span>
+<label>Jeton <input type="password" id="jeton" placeholder="EXCALIDRAW_BIBLIO_TOKEN" autocomplete="off"></label>
+<button id="btn-jeton">OK</button>
+</header>
+<main>
+<aside>
+<div>
+<b id="fil">Excalidraw/</b>
+<button id="btn-haut" title="Dossier parent">↑</button>
+</div>
+<div id="dossiers"></div>
+<hr>
+<div id="fichiers"></div>
+<hr>
+<input id="nouveau-dossier" placeholder="nouveau dossier">
+<button id="btn-dossier">Créer</button>
+<hr>
+<input type="file" id="import" accept=".excalidraw,application/json">
+</aside>
+<div id="editeur">
+<div class="toolbar">
+<b id="courant">(aucun fichier)</b>
+<button id="btn-ouvrir">Ouvrir</button>
+<button id="btn-enregistrer">Enregistrer distant</button>
+<button id="btn-nouveau">Nouveau</button>
+<button id="btn-telecharger">Télécharger</button>
+<span id="msg"></span>
+</div>
+<div id="scene" style="height: calc(100% - 49px);"></div>
+<div id="repli">
+<p>Éditeur distant indisponible (CDN injoignable). Repli : JSON ci-dessous, ou
+<a id="frontend-local" href="/" target="_blank" rel="noopener">frontend officiel</a>
+(ouvrez-y le .excalidraw téléchargé).</p>
+<textarea id="json" spellcheck="false"></textarea>
+<div><button id="btn-repli-charger">Charger JSON</button>
+<button id="btn-repli-enregistrer">Enregistrer JSON distant</button></div>
+</div>
+</div>
+</main>
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const api = async (methode, chemin, corps) => {
+  const jeton = localStorage.getItem("excali_jeton") || "";
+  const url = "api/" + chemin;
+  const r = await fetch(url, { method: methode,
+    headers: { "Authorization": "Bearer " + jeton, "Content-Type": "application/json" },
+    body: corps === undefined ? undefined : JSON.stringify(corps) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d.ok === false) throw new Error(d.erreur || ("HTTP " + r.status));
+  return d;
+};
+const apiBrut = async (methode, chemin, texte) => {
+  const jeton = localStorage.getItem("excali_jeton") || "";
+  const r = await fetch("api/" + chemin, { method: methode,
+    headers: { "Authorization": "Bearer " + jeton, "Content-Type": "application/json" },
+    body: texte });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d.ok === false) throw new Error(d.erreur || ("HTTP " + r.status));
+  return d;
+};
+let dossier = "";
+let fichierSel = null;   // chemin relatif
+let docCourant = null;
+let excaliAPI = null;
+let editeurPret = false;
+
+const msg = (t) => { $("msg").textContent = t; };
+const statut = (t) => { $("statut").textContent = t; };
+
+async function rafraichir() {
+  const vue = await api("GET", "liste?chemin=" + encodeURIComponent(dossier));
+  $("fil").textContent = "Excalidraw/" + (dossier ? dossier + "/" : "");
+  const dz = $("dossiers"); dz.innerHTML = "";
+  for (const d of vue.dossiers) {
+    const b = document.createElement("button");
+    b.textContent = "📁 " + d; b.className = "dossier";
+    b.onclick = () => { dossier = dossier ? dossier + "/" + d : d; rafraichir().catch(e => msg(e.message)); };
+    dz.appendChild(b); dz.appendChild(document.createElement("br"));
+  }
+  const fz = $("fichiers"); fz.innerHTML = "";
+  for (const f of vue.fichiers) {
+    const b = document.createElement("button");
+    b.textContent = "📄 " + f.nom; b.className = "fichier" + (f.chemin === fichierSel ? " actif" : "");
+    b.onclick = () => { fichierSel = f.chemin; $("courant").textContent = "Excalidraw/" + f.chemin; ouvrir().catch(e => msg(e.message)); rafraichir().catch(()=>{}); };
+    fz.appendChild(b); fz.appendChild(document.createElement("br"));
+  }
+  statut(vue.dossiers.length + " dossiers, " + vue.fichiers.length + " dessins");
+}
+
+async function ouvrir() {
+  if (!fichierSel) { msg("sélectionnez un fichier"); return; }
+  const d = await api("GET", "document?chemin=" + encodeURIComponent(fichierSel));
+  docCourant = d.document;
+  $("courant").textContent = "Excalidraw/" + fichierSel;
+  if (editeurPret && excaliAPI) {
+    excaliAPI.updateScene({ elements: docCourant.elements || [], appState: docCourant.appState || {} });
+  }
+  $("json").value = JSON.stringify(docCourant, null, 2);
+  msg("ouvert : Excalidraw/" + fichierSel);
+  if (location.hash !== "#/" + fichierSel) history.replaceState(null, "", "#/" + fichierSel);
+}
+
+async function enregistrer() {
+  let doc = docCourant;
+  if (editeurPret && excaliAPI) {
+    const elements = excaliAPI.getSceneElements();
+    const appState = excaliAPI.getAppState();
+    doc = { type: "excalidraw", version: 2,
+      source: location.origin + location.pathname.replace(/\/bibliotheque$/, "/bibliotheque"),
+      elements: JSON.parse(JSON.stringify(elements)),
+      appState: { viewBackgroundColor: appState.viewBackgroundColor }, files: {} };
+  } else {
+    try { doc = JSON.parse($("json").value); }
+    catch { msg("JSON invalide"); return; }
+  }
+  let cible = fichierSel;
+  if (!cible) {
+    cible = prompt("Chemin distant (ex. brouillons/sans-titre.excalidraw) :", (dossier ? dossier + "/" : "") + "sans-titre.excalidraw");
+    if (!cible) return;
+    if (!cible.toLowerCase().endsWith(".excalidraw")) cible += ".excalidraw";
+  }
+  await apiBrut("PUT", "document?chemin=" + encodeURIComponent(cible), JSON.stringify(doc));
+  fichierSel = cible; docCourant = doc;
+  $("courant").textContent = "Excalidraw/" + cible;
+  msg("enregistré : Excalidraw/" + cible);
+  rafraichir().catch(() => {});
+}
+
+async function demarrer() {
+  $("frontend-local").href = location.protocol + "//" + location.host + "/";
+  $("jeton").value = localStorage.getItem("excali_jeton") || "";
+  $("btn-jeton").onclick = () => {
+    localStorage.setItem("excali_jeton", $("jeton").value.trim());
+    msg("jeton enregistré localement"); rafraichir().catch(e => msg(e.message));
+  };
+  $("btn-haut").onclick = () => {
+    dossier = dossier.includes("/") ? dossier.slice(0, dossier.lastIndexOf("/")) : "";
+    rafraichir().catch(e => msg(e.message));
+  };
+  $("btn-dossier").onclick = async () => {
+    const n = $("nouveau-dossier").value.trim(); if (!n) return;
+    await api("POST", "dossiers", { dossier: dossier ? dossier + "/" + n : n });
+    $("nouveau-dossier").value = ""; rafraichir().catch(() => {});
+  };
+  $("btn-ouvrir").onclick = () => ouvrir().catch(e => msg(e.message));
+  $("btn-enregistrer").onclick = () => enregistrer().catch(e => msg(e.message));
+  $("btn-nouveau").onclick = () => {
+    fichierSel = null; docCourant = null;
+    $("courant").textContent = "(nouveau dessin)";
+    if (editeurPret && excaliAPI) excaliAPI.updateScene({ elements: [] });
+    $("json").value = ""; history.replaceState(null, "", location.pathname);
+  };
+  $("btn-telecharger").onclick = () => {
+    const texte = $("json").value || JSON.stringify(docCourant || {}, null, 2);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([texte], { type: "application/json" }));
+    a.download = (fichierSel || "dessin").split("/").pop();
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  };
+  $("btn-repli-charger").onclick = () => {
+    try { docCourant = JSON.parse($("json").value); msg("JSON chargé"); }
+    catch { msg("JSON invalide"); }
+  };
+  $("btn-repli-enregistrer").onclick = () => enregistrer().catch(e => msg(e.message));
+  $("import").onchange = async (ev) => {
+    const f = ev.target.files[0]; if (!f) return;
+    docCourant = JSON.parse(await f.text());
+    $("json").value = JSON.stringify(docCourant, null, 2);
+    if (editeurPret && excaliAPI) excaliAPI.updateScene({ elements: docCourant.elements || [] });
+    msg("importé : " + f.name + " (Enregistrer distant pour persister)");
+  };
+  // Ouverture via #/chemin (liens MCP « ouvrir dans Excalidraw »).
+  if (location.hash.startsWith("#/")) {
+    fichierSel = decodeURIComponent(location.hash.slice(2));
+    $("courant").textContent = "Excalidraw/" + fichierSel;
+  }
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { Excalidraw } = await import("@excalidraw/excalidraw");
+    const h = React.createElement;
+    const App = () => h("div", { className: "excalidraw-wrapper", style: { height: "100%" } },
+      h(Excalidraw, { excalidrawAPI: (api2) => { excaliAPI = api2; },
+        initialData: docCourant ? { elements: docCourant.elements, appState: docCourant.appState } : null }));
+    createRoot($("scene")).render(h(App));
+    editeurPret = true;
+    if (fichierSel) ouvrir().catch(e => msg(e.message));
+  } catch (e) {
+    $("scene").style.display = "none";
+    $("repli").style.display = "flex";
+    msg("éditeur distant indisponible, repli JSON actif");
+  }
+  if (localStorage.getItem("excali_jeton")) rafraichir().catch(e => msg(e.message));
+  else msg("renseignez le jeton pour lister la bibliothèque");
+}
+demarrer();
+</script>
+</body>
+</html>

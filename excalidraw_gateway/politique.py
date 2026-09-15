@@ -13,11 +13,19 @@ save_checkpoint, read_checkpoint).
 Note : `export_to_excalidraw` televerse le diagramme vers excalidraw.com (URL
 publique de partage) : c'est une sortie de donnee, donc classee en ecriture
 (soumise au consentement humain avec la portee d'ecriture).
+
+Bibliotheque distante (persistance serveur, 2026-09-16) : les outils
+`library_*` sont servis LOCALEMENT par la passerelle (jamais relayes vers
+l'upstream) depuis la racine durable `/srv/excalidraw/data/bibliotheque`,
+presentee comme `Excalidraw`. `create_view` accepte en outre un parametre
+optionnel `enregistrer_sous` : sans lui, relais verbatim vers l'upstream
+(comportement historique preserve) ; avec lui, la passerelle relaye puis
+persiste le diagramme genere.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from excalidraw_gateway.oauth import PORTEE, PORTEE_ECRITURE
 
@@ -37,6 +45,26 @@ OUTILS_ECRITURE: frozenset[str] = frozenset(
         "export_to_excalidraw",
     }
 )
+
+# Bibliotheque distante servie localement : navigation (lecture).
+OUTILS_BIBLIO_LECTURE: frozenset[str] = frozenset(
+    {
+        "library_list",
+        "library_load",
+    }
+)
+
+# Bibliotheque distante servie localement : mutations (ecriture).
+OUTILS_BIBLIO_ECRITURE: frozenset[str] = frozenset(
+    {
+        "library_mkdir",
+        "library_save",
+        "library_move",
+    }
+)
+
+# Outils servis localement par la passerelle (jamais relayes a l'upstream).
+OUTILS_LOCAUX: frozenset[str] = OUTILS_BIBLIO_LECTURE | OUTILS_BIBLIO_ECRITURE
 
 # Aucun outil d'administration cote excalidraw. Les outils inconnus sont de toute
 # facon refuses (fail-closed) par `autoriser_call` ci-dessous.
@@ -58,11 +86,13 @@ class PolitiqueOutils:
     portee_ecriture: str = PORTEE_ECRITURE
     lecture: frozenset[str] = OUTILS_LECTURE
     ecriture: frozenset[str] = OUTILS_ECRITURE
+    biblio_lecture: frozenset[str] = field(default=OUTILS_BIBLIO_LECTURE)
+    biblio_ecriture: frozenset[str] = field(default=OUTILS_BIBLIO_ECRITURE)
     admin: frozenset[str] = OUTILS_ADMIN
 
     def connus(self) -> frozenset[str]:
-        """Ensemble des outils classes (lecture + ecriture + admin)."""
-        return self.lecture | self.ecriture | self.admin
+        """Ensemble des outils classes (lecture + ecriture + biblio + admin)."""
+        return self.lecture | self.ecriture | self.biblio_lecture | self.biblio_ecriture | self.admin
 
     def visibles(self, portees: set[str]) -> set[str]:
         """Outils annoncables a un jeton portant `portees` (filtre de tools/list).
@@ -74,23 +104,23 @@ class PolitiqueOutils:
             # Cas theorique : le middleware exige deja la portee lecture pour
             # atteindre /mcp. Par defaut de robustesse : aucun outil annonce.
             return set()
-        visibles = set(self.lecture)
+        visibles = set(self.lecture) | set(self.biblio_lecture)
         if self.portee_ecriture in portees:
-            visibles |= set(self.ecriture)
+            visibles |= set(self.ecriture) | set(self.biblio_ecriture)
         return visibles
 
     def autoriser_call(self, nom: str, portees: set[str]) -> str | None:
         """Raison de refus d'un `tools/call`, ou ``None`` si l'appel est autorise.
 
-        Appelee AVANT tout envoi vers l'upstream.
+        Appelee AVANT tout envoi vers l'upstream (ou tout traitement local).
         """
         if nom in self.admin:
             return "outil d'administration interdit aux clients de la passerelle"
-        if nom in self.ecriture:
+        if nom in self.ecriture or nom in self.biblio_ecriture:
             if self.portee_ecriture in portees:
                 return None
             return f"portee {self.portee_ecriture} requise pour cet outil"
-        if nom in self.lecture:
+        if nom in self.lecture or nom in self.biblio_lecture:
             if self.portee_lecture in portees:
                 return None
             return f"portee {self.portee_lecture} requise pour cet outil"
