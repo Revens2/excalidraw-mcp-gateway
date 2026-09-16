@@ -19,6 +19,7 @@ preserve.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 
@@ -29,6 +30,12 @@ from excalidraw_gateway.bibliotheque import ErreurBibliotheque
 
 # Parametre d'extension de create_view (persistance du diagramme genere).
 PARAM_PERSISTANCE = "enregistrer_sous"
+
+# URL de base de l'editeur (sans le deep-link ``#/<chemin>``), parametrable
+# sans toucher au code : en production privee, vaut l'editeur du vhost
+# NetBird (ex. ``http://10.200.114.203:8130/editeur``). Absente, on
+# retombe sur le montage public historique (compatibilite).
+NOM_ENV_URL_EDITEUR = "EXCALIDRAW_URL_EDITEUR"
 
 COMPTEUR_APPELS = "biblio_appel_local"
 
@@ -44,9 +51,15 @@ class ContexteLocal:
 def url_ouverture(ctx: ContexteLocal, chemin_relatif: str) -> str:
     """URL interne « ouvrir dans Excalidraw » pour un chemin relatif.
 
-    Pointe vers l'editeur principal integre (actions distantes + locales),
-    avec deep-link ``#/<chemin>`` charge automatiquement.
+    Pointe vers l'editeur principal integre, avec deep-link ``#/<chemin>``
+    charge automatiquement. Si ``EXCALIDRAW_URL_EDITEUR`` est defini
+    (editeur prive NetBird, ex. ``http://10.200.114.203:8130/editeur``),
+    il est utilise tel quel ; sinon, repli historique sur le montage
+    public ``<base>/excalidraw/editeur``.
     """
+    prefixe = os.environ.get(NOM_ENV_URL_EDITEUR, "").strip().rstrip("/")
+    if prefixe:
+        return f"{prefixe}#/{chemin_relatif}"
     base = (ctx.base_ouverture or "https://mymcps.duckdns.org").rstrip("/")
     return f"{base}/excalidraw/editeur#/{chemin_relatif}"
 

@@ -34,16 +34,19 @@ Outils MCP servis localement par la passerelle (jamais relayes a l'upstream) :
   invalide reste refuse avant tout relais (fail-closed, upstream jamais
   contacte pour une demande inexploitable).
 
-Page web : `/editeur` (**editeur principal integre** : « Ouvrir distant » /
-« Sauvegarder distant » / « Ouvrir local » / « Sauvegarder local », deep-link
-`#/<chemin>`, meme API distante) + `/bibliotheque` conservee (navigation
-dossiers, mkdir/deplacer, repli JSON) + API `/api/liste`, `/api/document`
-(GET/PUT), `/api/dossiers`, `/api/deplacer`
-(Jeton `EXCALIDRAW_BIBLIO_TOKEN` en `Authorization: Bearer`, jamais en URL).
-Expose via nginx : `https://mymcps.duckdns.org/excalidraw/editeur` et
-`http://145.241.171.189/` (instance principale ; frontend officiel conserve
-tel quel en repli sur `http://145.241.171.189/officiel/`,
-conteneur `excalidraw-front` inchange).
+Page web : `/editeur` (**editeur principal integre** : canvas officiel
+plein ecran + feuille de style officielle, actions discretes « Ouvrir » /
+« Enregistrer » / « Nouveau » via `renderTopRightUI` ouvrant la modale
+file-browser, deep-link `#/<chemin>`, puce de statut ; fichiers locaux via
+le menu natif Excalidraw) ; `/bibliotheque` redirige vers `/editeur` ;
+API `/api/liste`, `/api/document` (GET/PUT), `/api/dossiers`,
+`/api/deplacer` (Bearer `EXCALIDRAW_BIBLIO_TOKEN` exige, jamais en URL).
+Editeur + API servis UNIQUEMENT sur le reseau prive (vhost NetBird,
+jamais en public) : le proxy prive injecte l'`Authorization` cote serveur,
+le navigateur ne voit aucun secret (ni champ, ni stockage, ni en-tete).
+Seul `/excalidraw/mcp` (+ OAuth/well-known) reste public pour ChatGPT.
+Deep-link `url_ouverture` parametrable via `EXCALIDRAW_URL_EDITEUR`
+(editeur prive, ex. `http://10.200.114.203:8130/editeur`).
 
 Deploiement : voir l'unite `excalidraw-gateway.service` et les vhosts
 `mymcps.duckdns.org` / `excalidraw-ip` versionnes dans

@@ -4,7 +4,7 @@ Couvre : confinement des chemins (traversal, liens symboliques), CRUD,
 politique d'outils, injection tools/list, outils locaux servis sans upstream,
 `create_view` systematiquement persiste (`enregistrer_sous` prioritaire,
 sinon autosave `ia/` : nom sur, sans collision, rendu preserve et echec
-signale), page `/editeur` (4 actions), et API HTTP (jeton).
+signale), page `/editeur` (UI privee sans jeton), et API HTTP (jeton).
 """
 
 from __future__ import annotations
@@ -29,8 +29,11 @@ from excalidraw_gateway.app import construire_application
 from excalidraw_gateway.bibliotheque import ErreurBibliotheque
 from excalidraw_gateway.oauth import hacher_phrase
 from excalidraw_gateway.outils_locaux import (
+    NOM_ENV_URL_EDITEUR,
+    ContexteLocal,
     extraire_checkpoint_id,
     fusionner_definitions,
+    url_ouverture,
 )
 from excalidraw_gateway.politique import (
     OUTILS_BIBLIO_ECRITURE,
@@ -64,6 +67,8 @@ def environ(tmp_path, monkeypatch):
     monkeypatch.setenv("EXCALIDRAW_MCP_CONSENT_HASH", hacher_phrase(PHRASE))
     monkeypatch.setenv("EXCALIDRAW_BIBLIO_DIR", str(tmp_path / "biblio"))
     monkeypatch.setenv("EXCALIDRAW_BIBLIO_TOKEN", JETON_BIBLIO)
+    # Les tests du montage historique ne doivent jamais voir l'URL privee.
+    monkeypatch.delenv(NOM_ENV_URL_EDITEUR, raising=False)
     return tmp_path
 
 
@@ -500,20 +505,53 @@ def test_create_view_persistance_signalee_rendu_preserve(environ):
     _courir(_t())
 
 
-def test_page_editeur_expose_quatre_actions(environ):
+def test_page_editeur_ui_privee_sans_jeton(environ):
+    """Editeur : CSS officiel, actions discretes, aucun secret navigateur."""
     async def _t():
         async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
             r = await c.get("/editeur")
             assert r.status_code == 200, r.status_code
-            for action in ("Ouvrir distant", "Sauvegarder distant",
-                           "Ouvrir local", "Sauvegarder local"):
-                assert action in r.text, action
-            # Composant officiel epingle (memes versions que /bibliotheque).
+            # Feuille de style officielle du composant (diagnostic 2026-09-16 :
+            # son absence produisait le rendu brut).
+            assert "@excalidraw/excalidraw@0.18.0/dist/prod/index.css" in r.text
+            assert 'integrity="sha384-' in r.text  # SRI epargne CDN altere
             assert "@excalidraw/excalidraw@0.18.0" in r.text
+            # Actions bibliotheque discretes integrees au canvas officiel.
+            assert "renderTopRightUI" in r.text
+            for action in ("Ouvrir", "Enregistrer", "Nouveau"):
+                assert action in r.text, action
+            # Aucun secret cote navigateur : ni champ, ni stockage, ni header.
+            assert "excali_jeton" not in r.text
+            assert "localStorage" not in r.text
+            assert "Authorization" not in r.text
+            assert "EXCALIDRAW_BIBLIO_TOKEN" not in r.text
+            assert 'type="password"' not in r.text
             # Deep-link MCP supporte.
             assert 'location.hash.startsWith("#/")' in r.text
 
     _courir(_t())
+
+
+def test_page_bibliotheque_redirige_editeur(environ):
+    """L'ancienne page /bibliotheque redirige vers l'editeur integre."""
+    async def _t():
+        async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
+            r = await c.get("/bibliotheque", follow_redirects=False)
+            assert r.status_code in (301, 302), r.status_code
+            assert r.headers["location"] == "/editeur"
+
+    _courir(_t())
+
+
+def test_url_ouverture_editeur_prive_parametrable(environ, monkeypatch):
+    """Deep-link : EXCALIDRAW_URL_EDITEUR prioritaire, repli historique sinon."""
+    ctx = ContexteLocal(upstream="http://127.0.0.1:9", base_ouverture="https://biblio.example.test")
+    monkeypatch.setenv(NOM_ENV_URL_EDITEUR, "http://10.200.114.203:8130/editeur")
+    assert url_ouverture(ctx, "rag/schema.excalidraw") == \
+        "http://10.200.114.203:8130/editeur#/rag/schema.excalidraw"
+    monkeypatch.delenv(NOM_ENV_URL_EDITEUR)
+    assert url_ouverture(ctx, "rag/schema.excalidraw") == \
+        "https://biblio.example.test/excalidraw/editeur#/rag/schema.excalidraw"
 
 
 def test_biblio_ecriture_refusee_en_lecture(environ):
@@ -549,8 +587,10 @@ def _h_biblio() -> dict[str, str]:
 def test_api_http_jeton_requis_et_roundtrip(environ):
     async def _t():
         async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
-            r = await c.get("/bibliotheque")
-            assert r.status_code == 200 and "Bibliothèque" in r.text
+            r = await c.get("/bibliotheque", follow_redirects=False)
+            assert r.status_code in (301, 302) and r.headers["location"] == "/editeur"
+            r = await c.get("/editeur")
+            assert r.status_code == 200 and "renderTopRightUI" in r.text
             r = await c.get("/api/liste")
             assert r.status_code == 401
             r = await c.get("/api/liste", headers=_h_biblio())
