@@ -42,7 +42,8 @@ dossiers, mkdir/deplacer, repli JSON) + API `/api/liste`, `/api/document`
 (Jeton `EXCALIDRAW_BIBLIO_TOKEN` en `Authorization: Bearer`, jamais en URL).
 Expose via nginx : `https://mymcps.duckdns.org/excalidraw/editeur` et
 `http://145.241.171.189/` (instance principale ; frontend officiel conserve
-tel quel en repli, conteneur `excalidraw-front` inchange).
+tel quel en repli sur `http://145.241.171.189/officiel/`,
+conteneur `excalidraw-front` inchange).
 
 Deploiement : voir l'unite `excalidraw-gateway.service` et les vhosts
 `mymcps.duckdns.org` / `excalidraw-ip` versionnes dans

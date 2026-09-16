@@ -165,7 +165,7 @@ async function enregistrer() {
 }
 
 async function demarrer() {
-  $("frontend-local").href = location.protocol + "//" + location.host + "/";
+  $("frontend-local").href = location.protocol + "//" + location.host + "/officiel/";
   $("jeton").value = localStorage.getItem("excali_jeton") || "";
   $("btn-jeton").onclick = () => {
     localStorage.setItem("excali_jeton", $("jeton").value.trim());
