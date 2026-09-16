@@ -17,10 +17,11 @@ publique de partage) : c'est une sortie de donnee, donc classee en ecriture
 Bibliotheque distante (persistance serveur, 2026-09-16) : les outils
 `library_*` sont servis LOCALEMENT par la passerelle (jamais relayes vers
 l'upstream) depuis la racine durable `/srv/excalidraw/data/bibliotheque`,
-presentee comme `Excalidraw`. `create_view` accepte en outre un parametre
-optionnel `enregistrer_sous` : sans lui, relais verbatim vers l'upstream
-(comportement historique preserve) ; avec lui, la passerelle relaye puis
-persiste le diagramme genere.
+presentee comme `Excalidraw`. `create_view` est systematiquement persiste :
+`enregistrer_sous` (ex. `rag/schema.excalidraw`) designe le chemin
+(prioritaire) ; sans lui, autosave sous `Excalidraw/ia/` (nom horodate sans
+collision). Le rendu n'est jamais sacrifie : un echec de persistance est
+signale dans la reponse, rendu preserve.
 """
 
 from __future__ import annotations

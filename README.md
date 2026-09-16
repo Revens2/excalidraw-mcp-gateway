@@ -24,17 +24,25 @@ Outils MCP servis localement par la passerelle (jamais relayes a l'upstream) :
 - Lecture : `library_list`, `library_load`.
 - Ecriture : `library_mkdir`, `library_save` (`elements` JSON ou `checkpoint_id`),
   `library_move` (renommer/deplacer).
-- `create_view` accepte `enregistrer_sous` (ex. `rag/schema.excalidraw`) :
-  relais vers l'upstream puis persistance du checkpoint genere ; sans ce
-  parametre, relais verbatim (comportement historique). Reponse enrichie de
-  `fichier` + `url_ouverture` (`.../excalidraw/bibliotheque#/<chemin>`).
+- `create_view` est systematiquement persiste : `enregistrer_sous`
+  (ex. `rag/schema.excalidraw`) designe le chemin (prioritaire) ; sans lui,
+  autosave automatique sous `Excalidraw/ia/` (nom horodate sans collision,
+  confinement inchange). Reponse enrichie de `fichier` + `url_ouverture`
+  (`.../excalidraw/editeur#/<chemin>`, editeur principal) + `persistance_ok`.
+  Le rendu n'est jamais sacrifie : un echec de persistance est signale dans
+  la reponse (`persistance_ok: False`), rendu preserve. Un `enregistrer_sous`
+  invalide reste refuse avant tout relais (fail-closed, upstream jamais
+  contacte pour une demande inexploitable).
 
-Page web : `/bibliotheque` (navigation dossiers, ouverture, edition integree
-avec repli JSON si le CDN est injoignable, sauvegarde distante) + API
-`/api/liste`, `/api/document` (GET/PUT), `/api/dossiers`, `/api/deplacer`
+Page web : `/editeur` (**editeur principal integre** : « Ouvrir distant » /
+« Sauvegarder distant » / « Ouvrir local » / « Sauvegarder local », deep-link
+`#/<chemin>`, meme API distante) + `/bibliotheque` conservee (navigation
+dossiers, mkdir/deplacer, repli JSON) + API `/api/liste`, `/api/document`
+(GET/PUT), `/api/dossiers`, `/api/deplacer`
 (Jeton `EXCALIDRAW_BIBLIO_TOKEN` en `Authorization: Bearer`, jamais en URL).
-Expose via nginx : `https://mymcps.duckdns.org/excalidraw/bibliotheque` et
-`http://145.241.171.189/bibliotheque` (frontend officiel inchange).
+Expose via nginx : `https://mymcps.duckdns.org/excalidraw/editeur` et
+`http://145.241.171.189/` (instance principale ; frontend officiel conserve
+tel quel en repli, conteneur `excalidraw-front` inchange).
 
 Deploiement : voir l'unite `excalidraw-gateway.service` et les vhosts
 `mymcps.duckdns.org` / `excalidraw-ip` versionnes dans

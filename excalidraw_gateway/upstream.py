@@ -588,30 +588,54 @@ class ProxyMCP:
             send, 200, {"jsonrpc": "2.0", "id": id_rpc, "result": resultat}
         )
 
-    async def _create_view_persistant(
+    @staticmethod
+    def _annoter_echec_persistance(resultat: dict[str, Any], raison: str) -> None:
+        """Signale un echec de persistance dans un rendu reussi (rendu preserve).
+
+        Ajoute une note explicite au texte + ``persistance_ok: False`` au
+        contenu structure : le client voit le dessin ET l'echec, sans ambiguite.
+        """
+        ligne = (
+            f"\nPersistance distante echouee ({raison}) : "
+            "le dessin ci-dessus reste affiche mais n'est pas enregistre."
+        )
+        contenu = resultat.get("content")
+        if (
+            isinstance(contenu, list) and contenu
+            and isinstance(contenu[0], dict) and isinstance(contenu[0].get("text"), str)
+        ):
+            contenu[0]["text"] = contenu[0]["text"] + ligne
+        else:
+            resultat["content"] = [{"type": "text", "text": "Diagramme affiche." + ligne}]
+        structure = resultat.get("structuredContent")
+        if isinstance(structure, dict):
+            structure.update({"persistance_ok": False, "erreur_persistance": raison})
+        else:
+            resultat["structuredContent"] = {
+                "persistance_ok": False, "erreur_persistance": raison,
+            }
+
+    @staticmethod
+    def _reencoder_enveloppe(enveloppe: dict, ctype: str) -> bytes:
+        """Re-encode une enveloppe tools/call modifiee (JSON nu ou SSE)."""
+        if "text/event-stream" in ctype.lower():
+            return b"data: " + json.dumps(enveloppe, ensure_ascii=False).encode() + b"\n\n"
+        return json.dumps(enveloppe, ensure_ascii=False).encode()
+
+    async def _relayer_create_view(
         self,
         send: Send,
         donnees: dict[str, Any],
         url: str,
         entetes: dict[str, str],
         args: dict[str, Any],
-    ) -> None:
-        """Relaye create_view vers l'upstream puis persiste le diagramme genere.
+    ) -> tuple[int, httpx.Headers, bytes, str] | None:
+        """Relaye create_view vers l'upstream (parametre local retire).
 
-        En cas d'echec de la persistance, la reponse de rendu upstream est
-        renvoyee TELLE QUELLE : le dessin n'est jamais perdu.
+        Retourne ``(statut, entetes, corps, content-type)`` ; ``None`` si une
+        reponse 502 a deja ete envoyee (upstream injoignable).
         """
         id_rpc = donnees.get("id")
-        try:
-            rel = bibliotheque.normaliser_relatif(
-                str(args.get(PARAM_PERSISTANCE)).strip(), fichier=True
-            )
-        except ErreurBibliotheque as exc:
-            compter("biblio_refus", "create_view.enregistrer_sous")
-            await self._repondre_erreur_jsonrpc(
-                send, id_rpc, _CODE_ERREUR_AUTORISATION, f"enregistrer_sous : {exc}"
-            )
-            return
         params_amont = dict(donnees.get("params") or {})
         params_amont["arguments"] = {
             k: v for k, v in args.items() if k != PARAM_PERSISTANCE
@@ -634,7 +658,7 @@ class ProxyMCP:
                  "error": {"code": -32000, "message": f"upstream indisponible: {exc.__class__.__name__}"},
                  "id": None},
             )
-            return
+            return None
         try:
             corps_reponse = await reponse.aread()
             ctype = reponse.headers.get("content-type", "") or ""
@@ -642,27 +666,95 @@ class ProxyMCP:
             entetes_rep = reponse.headers
         finally:
             await reponse.aclose()
+        return statut, entetes_rep, corps_reponse, ctype
+
+    async def _create_view_persistant(
+        self,
+        send: Send,
+        donnees: dict[str, Any],
+        url: str,
+        entetes: dict[str, str],
+        args: dict[str, Any],
+        relatif: str | None = None,
+    ) -> None:
+        """Relaye create_view vers l'upstream puis persiste le diagramme genere.
+
+        ``relatif`` = chemin explicite (``enregistrer_sous``, prioritaire,
+        valide strictement : invalide -> erreur JSON-RPC AVANT tout relais,
+        l'upstream n'est jamais contacte pour une demande inexploitable) ;
+        ``None`` = autosave automatique sous ``Excalidraw/ia/`` (nom horodate
+        sans collision, confinement inchange).
+
+        Le rendu upstream n'est jamais sacrifie : tout echec de persistance
+        APRES le rendu renvoie la reponse upstream intacte, augmentee d'une
+        note d'echec explicite (``_annoter_echec_persistance``).
+        """
+        id_rpc = donnees.get("id")
+        automatique = relatif is None
+        if not automatique:
+            try:
+                rel = bibliotheque.normaliser_relatif(relatif.strip(), fichier=True)
+            except ErreurBibliotheque as exc:
+                compter("biblio_refus", "create_view.enregistrer_sous")
+                await self._repondre_erreur_jsonrpc(
+                    send, id_rpc, _CODE_ERREUR_AUTORISATION, f"enregistrer_sous : {exc}"
+                )
+                return
+        else:
+            rel = None  # genere apres le rendu : le rendu n'est jamais sacrifie
+        relay = await self._relayer_create_view(send, donnees, url, entetes, args)
+        if relay is None:
+            return
+        statut, entetes_rep, corps_reponse, ctype = relay
         enveloppe = _enveloppe_outil(corps_reponse, ctype)
         resultat = enveloppe.get("result") if isinstance(enveloppe, dict) else None
         if not isinstance(resultat, dict):
-            compter("biblio_persistance_echec", "reponse-illisible")
+            if isinstance(enveloppe, dict) and "error" in enveloppe:
+                # Erreur renvoyee par l'upstream (ex. entrees invalides) :
+                # reponse d'erreur relayee telle quelle, ce n'est pas un
+                # echec de persistance.
+                compter("biblio_persistance_echec", "reponse-erreur")
+            else:
+                # Reponse illisible : on ne touche a rien (re-encodage
+                # risquerait de corrompre), relais verbatim.
+                compter("biblio_persistance_echec", "reponse-illisible")
             await _envoyer_corps(send, statut, entetes_rep, corps_reponse)
             return
         checkpoint = extraire_checkpoint_id(resultat)
         if checkpoint is None:
             compter("biblio_persistance_echec", "sans-checkpoint")
-            await _envoyer_corps(send, statut, entetes_rep, corps_reponse)
+            self._annoter_echec_persistance(resultat, "aucun checkpoint dans la reponse")
+            enveloppe["result"] = resultat
+            await _envoyer_corps(
+                send, statut, entetes_rep, self._reencoder_enveloppe(enveloppe, ctype)
+            )
             return
+        if automatique:
+            try:
+                rel = bibliotheque.generer_autosave()
+            except ErreurBibliotheque as exc:
+                compter("biblio_persistance_echec", "autosave-nom")
+                self._annoter_echec_persistance(resultat, f"autosave impossible : {exc}")
+                enveloppe["result"] = resultat
+                await _envoyer_corps(
+                    send, statut, entetes_rep, self._reencoder_enveloppe(enveloppe, ctype)
+                )
+                return
+        assert rel is not None
         try:
             elements = await lire_checkpoint_elements(self._http(), self._base_url, checkpoint)
             document = bibliotheque.construire_document(elements)
             bibliotheque.enregistrer(rel, document)
         except (ErreurBibliotheque, RuntimeError, httpx.HTTPError, OSError) as exc:
             compter("biblio_persistance_echec", exc.__class__.__name__[:48])
-            await _envoyer_corps(send, statut, entetes_rep, corps_reponse)
+            self._annoter_echec_persistance(resultat, exc.__class__.__name__)
+            enveloppe["result"] = resultat
+            await _envoyer_corps(
+                send, statut, entetes_rep, self._reencoder_enveloppe(enveloppe, ctype)
+            )
             return
         base = self._base_ouverture or "https://mymcps.duckdns.org"
-        url_ouverture = f"{base}/excalidraw/bibliotheque#/{rel}"
+        url_ouverture = f"{base}/excalidraw/editeur#/{rel}"
         ligne = (
             f"\nFichier enregistre : Excalidraw/{rel} ({len(elements)} elements).\n"
             f"Ouvrir dans Excalidraw : {url_ouverture}"
@@ -676,19 +768,19 @@ class ProxyMCP:
         else:
             resultat["content"] = [{"type": "text", "text": "Diagramme affiche." + ligne}]
         structure = resultat.get("structuredContent")
+        enrichi = {
+            "fichier": f"Excalidraw/{rel}", "url_ouverture": url_ouverture,
+            "persistance_ok": True, "enregistrement_automatique": automatique,
+        }
         if isinstance(structure, dict):
-            structure.update({"fichier": f"Excalidraw/{rel}", "url_ouverture": url_ouverture})
+            structure.update(enrichi)
         else:
-            resultat["structuredContent"] = {
-                "fichier": f"Excalidraw/{rel}", "url_ouverture": url_ouverture,
-            }
+            resultat["structuredContent"] = enrichi
         enveloppe["result"] = resultat
-        if "text/event-stream" in ctype.lower():
-            nouveau = b"data: " + json.dumps(enveloppe, ensure_ascii=False).encode() + b"\n\n"
-        else:
-            nouveau = json.dumps(enveloppe, ensure_ascii=False).encode()
         compter("biblio_persistance", rel[:64])
-        await _envoyer_corps(send, statut, entetes_rep, nouveau)
+        await _envoyer_corps(
+            send, statut, entetes_rep, self._reencoder_enveloppe(enveloppe, ctype)
+        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -745,13 +837,21 @@ class ProxyMCP:
             if isinstance(nom_outil, str) and nom_outil in OUTILS_LOCAUX:
                 await self._servir_outil_local(send, donnees.get("id"), nom_outil, args_outil)
                 return
-            # create_view + enregistrer_sous : relais puis persistance du checkpoint genere.
-            if (
-                nom_outil == "create_view"
-                and isinstance(args_outil.get(PARAM_PERSISTANCE), str)
-                and args_outil[PARAM_PERSISTANCE].strip()
-            ):
-                await self._create_view_persistant(send, donnees, url, _entetes(bruts, version_relayee), args_outil)
+            # create_view : relais puis persistance systematique du checkpoint
+            # genere. `enregistrer_sous` (chaine non vide) est prioritaire ;
+            # sinon autosave sous `Excalidraw/ia/`. Le parametre local ne fuit
+            # jamais vers l'upstream (retire dans `_relayer_create_view`).
+            if nom_outil == "create_view":
+                demande = args_outil.get(PARAM_PERSISTANCE)
+                rel_demande = (
+                    demande.strip()
+                    if isinstance(demande, str) and demande.strip()
+                    else None
+                )
+                await self._create_view_persistant(
+                    send, donnees, url, _entetes(bruts, version_relayee),
+                    args_outil, relatif=rel_demande,
+                )
                 return
         entetes = _entetes(bruts, version_relayee)
         identite = self._identite(scope)
