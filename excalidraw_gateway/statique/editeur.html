@@ -362,7 +362,7 @@ function ouvrirModale(mode) {
   $("zone-nom").hidden = !estSave;
   if (estSave) {
     if (!dossier && fichierSel) dossier = dossierParent(fichierSel);
-    $("nom-fichier").value = nomFichier(fichierSel) || "sans-titre.excalidraw";
+    $("nom-fichier").value = fichierSel ? nomFichier(fichierSel) : "sans-titre.excalidraw";
   }
   $("voile").hidden = false;
   rafraichirModale().catch(() => {});
