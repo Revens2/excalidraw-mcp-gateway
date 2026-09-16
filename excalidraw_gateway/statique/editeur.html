@@ -18,29 +18,78 @@
   Decision documentee (2026-09-16) : pas de fork du depot excalidraw/excalidraw
   (bundle applicatif opaque, cout de build/maintenance disproportionne pour
   2 actions). Cette page utilise le composant officiel publie et epingle,
-  la meme API distante que /bibliotheque, et preserve les fonctions locales
-  (fichier) en natif. Le frontend officiel reste deploye tel quel en repli.
+  la meme API distante que /bibliotheque (api/liste, api/document : contrat
+  inchange), et preserve les fonctions locales (fichier) en natif.
+  Le frontend officiel reste deploye tel quel en repli.
+
+  Navigation distante (2026-09-16) : modale file-browser unique (modes Ouvrir
+  et Sauvegarder), coherente avec la DA Excalidraw (overlay + ile flottante).
+  Aucun prompt() natif, aucune sidebar permanente.
 -->
 <style>
-:root { color-scheme: light; }
+:root { color-scheme: light; --violet: #6965db; --fond-selection: #dbe4ff; }
 body { font-family: system-ui, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; }
 header { padding: 8px 12px; background: #1e1e2e; color: #fff; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 header input[type=password] { width: 260px; }
 main { display: flex; flex: 1; min-height: 0; }
-aside { width: 270px; border-right: 1px solid #ccc; overflow: auto; padding: 8px; }
-#editeur { flex: 1; min-width: 0; position: relative; }
+#editeur { flex: 1; min-width: 0; position: relative; display: flex; flex-direction: column; }
 #editeur .excalidraw-wrapper { height: 100%; }
 button { cursor: pointer; }
 button.action { font-weight: bold; padding: 6px 10px; }
-.dossier { font-weight: bold; cursor: pointer; }
-.fichier { cursor: pointer; padding: 2px 4px; }
-.fichier.actif { background: #dbe4ff; }
+button:disabled { cursor: not-allowed; opacity: 0.5; }
 #statut { font-size: 0.85em; opacity: 0.85; }
 #repli { display: none; height: 100%; box-sizing: border-box; padding: 8px; flex-direction: column; gap: 8px; }
 #repli textarea { flex: 1; font-family: monospace; }
 .toolbar { display: flex; gap: 8px; padding: 8px; border-bottom: 1px solid #ccc; flex-wrap: wrap; align-items: center;}
 .groupe { display: flex; gap: 6px; align-items: center; border: 1px solid #ddd; border-radius: 6px; padding: 4px 6px; }
 .groupe legend, .groupe b.titre { font-size: 0.8em; color: #444; }
+/* --- Modale file-browser (ile Excalidraw sur overlay) --- */
+.voile { position: fixed; inset: 0; background: rgba(30, 30, 46, 0.45); display: flex;
+  align-items: center; justify-content: center; padding: 16px; z-index: 50; }
+.voile[hidden] { display: none; }
+.ile { background: #fff; color: #1e1e2e; border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.35);
+  width: min(640px, 100%); max-height: 82vh; display: flex; flex-direction: column; overflow: hidden;
+  border: 1px solid #e0e0ea; }
+.modale-entete { display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+  border-bottom: 1px solid #eee; }
+.modale-entete h2 { font-size: 1rem; margin: 0; flex: 1; }
+.modale-actions-entete { display: flex; gap: 6px; }
+.modale-actions-entete button { border: 1px solid #ddd; background: #fff; border-radius: 8px;
+  padding: 4px 10px; font-size: 1rem; line-height: 1.4; }
+.modale-actions-entete button:hover { background: #f4f4fa; }
+.fil { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; padding: 8px 16px;
+  border-bottom: 1px solid #eee; font-size: 0.9em; }
+.fil button { border: none; background: none; color: var(--violet); font-weight: 600;
+  padding: 2px 4px; border-radius: 6px; }
+.fil button:hover { background: #efeffc; }
+.fil .sep { color: #999; }
+.fil .courant { color: #555; font-weight: 400; }
+.modale-statut { padding: 6px 16px; font-size: 0.85em; color: #555; min-height: 1.4em; }
+.modale-statut.erreur { color: #a31515; }
+.modale-liste { overflow: auto; padding: 4px 8px 8px; min-height: 180px; max-height: 44vh; }
+.entree { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  border: 1px solid transparent; background: none; border-radius: 8px; padding: 8px 10px;
+  font-size: 0.95em; }
+.entree:hover { background: #f4f4fa; }
+.entree:focus-visible { outline: 2px solid var(--violet); outline-offset: -2px; }
+.entree.dossier { font-weight: 600; }
+.entree.fichier[aria-selected="true"] { background: var(--fond-selection); border-color: #b9c6f5; }
+.entree svg { width: 20px; height: 20px; flex: none; }
+.entree .nom { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vide { padding: 24px 16px; text-align: center; color: #777; font-size: 0.9em; }
+.zone-nom { padding: 8px 16px; border-top: 1px solid #eee; display: flex; flex-direction: column; gap: 6px; }
+.zone-nom[hidden] { display: none; }
+.zone-nom label { font-size: 0.85em; font-weight: 600; }
+.zone-nom input { padding: 8px 10px; border: 1px solid #ccc; border-radius: 8px; font-size: 0.95em; }
+.zone-nom input:focus-visible { outline: 2px solid var(--violet); outline-offset: 1px; }
+.dossier-courant { font-size: 0.85em; color: #555; }
+.modale-pied { display: flex; gap: 8px; align-items: center; padding: 12px 16px;
+  border-top: 1px solid #eee; }
+.modale-selection { flex: 1; font-size: 0.85em; color: #555; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.modale-pied button { border-radius: 8px; padding: 8px 14px; border: 1px solid #ccc; background: #fff; }
+.modale-pied button.action { background: var(--violet); border-color: var(--violet); color: #fff; }
+.modale-pied button.action:hover { background: #5753c9; }
 </style>
 <script type="importmap">
 {"imports": {
@@ -61,41 +110,58 @@ button.action { font-weight: bold; padding: 6px 10px; }
 <button id="btn-jeton">OK</button>
 </header>
 <main>
-<aside>
-<div><b>Fichiers distants</b> <button id="btn-actualiser" title="Actualiser">↻</button></div>
-<div><b id="fil">Excalidraw/</b> <button id="btn-haut" title="Dossier parent">↑</button></div>
-<div id="dossiers"></div>
-<hr>
-<div id="fichiers"></div>
-<hr>
-<p style="font-size:0.8em;color:#555">Astuce : cliquez un fichier distant puis « Ouvrir distant ».
-Les liens « ouvrir dans Excalidraw » (MCP) arrivent ici via <code>#/chemin</code>.</p>
-</aside>
 <div id="editeur">
 <div class="toolbar">
 <b id="courant">(nouveau dessin)</b>
 <span class="groupe"><b class="titre">Distant</b>
-<button class="action" id="btn-ouvrir-distant">Ouvrir distant</button>
-<button class="action" id="btn-enregistrer-distant">Sauvegarder distant</button>
+<button class="action" id="btn-ouvrir-distant" title="Ouvrir un dessin de la bibliothèque distante">Ouvrir distant</button>
+<button class="action" id="btn-enregistrer-distant" title="Sauvegarder le dessin courant dans la bibliothèque distante">Sauvegarder distant</button>
 </span>
 <span class="groupe"><b class="titre">Local</b>
-<button class="action" id="btn-ouvrir-local">Ouvrir local</button>
-<button class="action" id="btn-enregistrer-local">Sauvegarder local</button>
+<button class="action" id="btn-ouvrir-local" title="Ouvrir un fichier .excalidraw depuis ce poste">Ouvrir local</button>
+<button class="action" id="btn-enregistrer-local" title="Télécharger le dessin courant en .excalidraw">Sauvegarder local</button>
 </span>
-<button id="btn-nouveau">Nouveau</button>
+<button id="btn-nouveau" title="Repartir d'un dessin vide">Nouveau</button>
 <span id="msg"></span>
 </div>
 <div id="scene" style="height: calc(100% - 49px);"></div>
 <div id="repli">
 <p>Éditeur distant indisponible (CDN injoignable). Repli : JSON ci-dessous
 (les 4 actions restent disponibles sur le JSON).</p>
-<textarea id="json" spellcheck="false"></textarea>
+<textarea id="json" spellcheck="false" aria-label="Document Excalidraw au format JSON"></textarea>
 <div><button id="btn-repli-charger">Charger JSON</button>
 <button id="btn-repli-enregistrer">Sauvegarder distant (JSON)</button></div>
 </div>
 </div>
 </main>
 <input type="file" id="import-local" accept=".excalidraw,application/json" style="display:none">
+<div id="voile" class="voile" hidden>
+  <div id="modale" class="ile" role="dialog" aria-modal="true" aria-labelledby="modale-titre">
+    <div class="modale-entete">
+      <h2 id="modale-titre">Ouvrir un dessin distant</h2>
+      <div class="modale-actions-entete">
+        <button id="btn-parent" title="Dossier parent">↑</button>
+        <button id="btn-actualiser" title="Actualiser la liste">↻</button>
+        <button id="btn-fermer" title="Fermer (Échap)">✕</button>
+      </div>
+    </div>
+    <nav id="fil" class="fil" aria-label="Fil d'Ariane"></nav>
+    <div id="modale-statut" class="modale-statut" role="status"></div>
+    <div id="modale-liste" class="modale-liste" role="listbox" aria-label="Dossiers et dessins distants"></div>
+    <div id="zone-nom" class="zone-nom" hidden>
+      <label for="nom-fichier">Nom de fichier</label>
+      <input id="nom-fichier" type="text" autocomplete="off" spellcheck="false"
+        placeholder="sans-titre.excalidraw" aria-describedby="dossier-courant">
+      <div class="dossier-courant">Dossier : <b id="dossier-courant">Excalidraw/</b></div>
+    </div>
+    <div class="modale-pied">
+      <span id="modale-selection" class="modale-selection"></span>
+      <button id="btn-modale-annuler">Annuler</button>
+      <button id="btn-modale-ouvrir" class="action">Ouvrir</button>
+      <button id="btn-modale-enregistrer" class="action" hidden>Enregistrer</button>
+    </div>
+  </div>
+</div>
 <script type="module">
 const $ = (id) => document.getElementById(id);
 const api = async (methode, chemin, corps) => {
@@ -122,10 +188,26 @@ let fichierSel = null;   // chemin relatif distant
 let docCourant = null;
 let excaliAPI = null;
 let editeurPret = false;
+let modeModale = null;   // "ouvrir" | "enregistrer" | null
+let dernierFocus = null;
 
 const msg = (t) => { $("msg").textContent = t; };
 const statut = (t) => { $("statut").textContent = t; };
+const statutModale = (t, erreur) => {
+  const el = $("modale-statut");
+  el.textContent = t;
+  el.classList.toggle("erreur", !!erreur);
+};
 const nomFichier = (rel) => (rel || "dessin").split("/").pop();
+const dossierParent = (rel) => (rel && rel.includes("/")) ? rel.slice(0, rel.lastIndexOf("/")) : "";
+
+const SVG_DOSSIER = '<svg viewBox="0 0 24 24" fill="none" stroke="#6965db" stroke-width="2" '
+  + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+const SVG_FICHIER = '<svg viewBox="0 0 24 24" fill="none" stroke="#8a8aa3" stroke-width="2" '
+  + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<path d="M6 2h8l4 4v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"/>'
+  + '<path d="M14 2v6h6"/></svg>';
 
 function sceneVersDocument() {
   if (editeurPret && excaliAPI) {
@@ -147,24 +229,150 @@ function documentVersScene(doc) {
   }
 }
 
-async function rafraichir() {
-  const vue = await api("GET", "liste?chemin=" + encodeURIComponent(dossier));
-  $("fil").textContent = "Excalidraw/" + (dossier ? dossier + "/" : "");
-  const dz = $("dossiers"); dz.innerHTML = "";
-  for (const d of vue.dossiers) {
-    const b = document.createElement("button");
-    b.textContent = "📁 " + d; b.className = "dossier";
-    b.onclick = () => { dossier = dossier ? dossier + "/" + d : d; rafraichir().catch(e => msg(e.message)); };
-    dz.appendChild(b); dz.appendChild(document.createElement("br"));
+function rendreFil() {
+  const fil = $("fil");
+  fil.innerHTML = "";
+  const racine = document.createElement("button");
+  racine.type = "button";
+  racine.textContent = "Excalidraw";
+  racine.title = "Racine Excalidraw";
+  racine.setAttribute("aria-label", "Aller à la racine Excalidraw");
+  racine.onclick = () => { dossier = ""; rafraichirModale().catch(() => {}); };
+  fil.appendChild(racine);
+  if (dossier) {
+    const segs = dossier.split("/");
+    let cumul = "";
+    segs.forEach((s, i) => {
+      const sep = document.createElement("span");
+      sep.className = "sep";
+      sep.textContent = "/";
+      fil.appendChild(sep);
+      cumul = cumul ? cumul + "/" + s : s;
+      const ici = cumul;
+      const dernier = i === segs.length - 1;
+      if (dernier) {
+        const b = document.createElement("span");
+        b.className = "courant";
+        b.textContent = s;
+        fil.appendChild(b);
+      } else {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = s;
+        b.setAttribute("aria-label", "Aller au dossier " + ici);
+        b.onclick = () => { dossier = ici; rafraichirModale().catch(() => {}); };
+        fil.appendChild(b);
+      }
+    });
   }
-  const fz = $("fichiers"); fz.innerHTML = "";
+}
+
+function majPiedModale() {
+  const sel = $("modale-selection");
+  if (modeModale === "enregistrer") {
+    $("dossier-courant").textContent = "Excalidraw/" + (dossier ? dossier + "/" : "");
+    const nom = $("nom-fichier").value.trim() || "…";
+    sel.textContent = "Enregistrera : Excalidraw/" + (dossier ? dossier + "/" : "") + nom;
+  } else {
+    sel.textContent = fichierSel ? "Sélection : Excalidraw/" + fichierSel : "Aucune sélection";
+    $("btn-modale-ouvrir").disabled = !fichierSel;
+  }
+}
+
+function selectionnerFichier(chemin) {
+  fichierSel = chemin;
+  for (const b of $("modale-liste").querySelectorAll(".entree.fichier")) {
+    b.setAttribute("aria-selected", b.dataset.chemin === chemin ? "true" : "false");
+  }
+  majPiedModale();
+}
+
+async function rafraichirModale() {
+  rendreFil();
+  majPiedModale();
+  const liste = $("modale-liste");
+  liste.innerHTML = "";
+  liste.setAttribute("aria-busy", "true");
+  statutModale("Chargement…", false);
+  let vue;
+  try {
+    vue = await api("GET", "liste?chemin=" + encodeURIComponent(dossier));
+  } catch (e) {
+    liste.removeAttribute("aria-busy");
+    statutModale("Erreur : " + e.message, true);
+    const p = document.createElement("p");
+    p.className = "vide";
+    p.textContent = "Impossible de lister ce dossier. Vérifiez le jeton distant, puis Actualiser (↻).";
+    liste.appendChild(p);
+    statut("erreur de liste");
+    return;
+  }
+  liste.removeAttribute("aria-busy");
+  for (const d of vue.dossiers) {
+    const chemin = dossier ? dossier + "/" + d : d;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "entree dossier";
+    b.setAttribute("role", "option");
+    b.setAttribute("aria-selected", "false");
+    b.title = "Ouvrir le dossier " + d;
+    b.setAttribute("aria-label", "Dossier " + d);
+    b.innerHTML = SVG_DOSSIER + '<span class="nom"></span>';
+    b.querySelector(".nom").textContent = d;
+    b.onclick = () => { dossier = chemin; rafraichirModale().catch(() => {}); };
+    liste.appendChild(b);
+  }
   for (const f of vue.fichiers) {
     const b = document.createElement("button");
-    b.textContent = "📄 " + f.nom; b.className = "fichier" + (f.chemin === fichierSel ? " actif" : "");
-    b.onclick = () => { fichierSel = f.chemin; $("courant").textContent = "Excalidraw/" + f.chemin; ouvrirDistant().catch(e => msg(e.message)); rafraichir().catch(()=>{}); };
-    fz.appendChild(b); fz.appendChild(document.createElement("br"));
+    b.type = "button";
+    b.className = "entree fichier";
+    b.setAttribute("role", "option");
+    b.setAttribute("aria-selected", f.chemin === fichierSel ? "true" : "false");
+    b.dataset.chemin = f.chemin;
+    b.title = f.chemin;
+    b.setAttribute("aria-label", "Dessin " + f.nom);
+    b.innerHTML = SVG_FICHIER + '<span class="nom"></span>';
+    b.querySelector(".nom").textContent = f.nom;
+    b.onclick = () => selectionnerFichier(f.chemin);
+    b.ondblclick = () => { selectionnerFichier(f.chemin); validerModale().catch(() => {}); };
+    liste.appendChild(b);
   }
+  if (!vue.dossiers.length && !vue.fichiers.length) {
+    const p = document.createElement("p");
+    p.className = "vide";
+    p.textContent = modeModale === "enregistrer"
+      ? "Dossier vide : choisissez un nom de fichier ci-dessous puis Enregistrer."
+      : "Dossier vide : aucun dessin ici. Remontez (↑) ou changez de dossier.";
+    liste.appendChild(p);
+  }
+  statutModale(vue.dossiers.length + " dossier(s), " + vue.fichiers.length + " dessin(s)", false);
   statut(vue.dossiers.length + " dossiers, " + vue.fichiers.length + " dessins");
+}
+
+function ouvrirModale(mode) {
+  modeModale = mode;
+  dernierFocus = document.activeElement;
+  const estSave = mode === "enregistrer";
+  $("modale-titre").textContent = estSave ? "Sauvegarder un dessin distant" : "Ouvrir un dessin distant";
+  $("modale-liste").setAttribute("aria-label", estSave
+    ? "Choisir le dossier de destination"
+    : "Dossiers et dessins distants");
+  $("btn-modale-ouvrir").hidden = estSave;
+  $("btn-modale-enregistrer").hidden = !estSave;
+  $("zone-nom").hidden = !estSave;
+  if (estSave) {
+    if (!dossier && fichierSel) dossier = dossierParent(fichierSel);
+    $("nom-fichier").value = nomFichier(fichierSel) || "sans-titre.excalidraw";
+  }
+  $("voile").hidden = false;
+  rafraichirModale().catch(() => {});
+  (estSave ? $("nom-fichier") : $("btn-modale-ouvrir")).focus();
+}
+
+function fermerModale() {
+  $("voile").hidden = true;
+  modeModale = null;
+  if (dernierFocus && dernierFocus.focus) dernierFocus.focus();
 }
 
 async function ouvrirDistant() {
@@ -176,23 +384,51 @@ async function ouvrirDistant() {
   if (location.hash !== "#/" + fichierSel) history.replaceState(null, "", "#/" + fichierSel);
 }
 
-async function sauvegarderDistant() {
+async function sauvegarderDistantCible(cible) {
   let doc;
   try { doc = sceneVersDocument(); }
-  catch { msg("JSON invalide"); return; }
-  if (!doc || doc.type !== "excalidraw" || !Array.isArray(doc.elements)) { msg("rien à sauvegarder"); return; }
-  let cible = fichierSel;
-  if (!cible) {
-    cible = prompt("Chemin distant (ex. ia/sans-titre.excalidraw) :", (dossier ? dossier + "/" : "ia/") + "sans-titre.excalidraw");
-    if (!cible) return;
-    if (!cible.toLowerCase().endsWith(".excalidraw")) cible += ".excalidraw";
+  catch { msg("JSON invalide"); statutModale("JSON invalide : rien à sauvegarder.", true); return; }
+  if (!doc || doc.type !== "excalidraw" || !Array.isArray(doc.elements)) {
+    msg("rien à sauvegarder");
+    statutModale("Rien à sauvegarder : le dessin est vide ou invalide.", true);
+    return;
   }
   await apiBrut("PUT", "document?chemin=" + encodeURIComponent(cible), JSON.stringify(doc));
   fichierSel = cible; docCourant = doc;
   $("courant").textContent = "Excalidraw/" + cible;
   msg("sauvegardé (distant) : Excalidraw/" + cible);
   if (location.hash !== "#/" + cible) history.replaceState(null, "", "#/" + cible);
-  rafraichir().catch(() => {});
+}
+
+function normaliserNomSauvegarde(brut) {
+  let nom = (brut || "").trim().replace(/\\/g, "/").trim();
+  if (!nom) throw new Error("nom de fichier requis");
+  if (nom.startsWith("/") || nom.startsWith("./") || nom.includes("..")) {
+    throw new Error("nom simple attendu (sans chemin) : choisissez le dossier via la liste");
+  }
+  nom = nom.split("/").filter((s) => s && s !== ".").join("/");
+  if (!nom) throw new Error("nom de fichier requis");
+  if (!nom.toLowerCase().endsWith(".excalidraw")) nom += ".excalidraw";
+  return nom;
+}
+
+async function validerModale() {
+  if (modeModale === "ouvrir") {
+    if (!fichierSel) { statutModale("Sélectionnez un dessin à ouvrir.", true); return; }
+    try {
+      await ouvrirDistant();
+      fermerModale();
+    } catch (e) { statutModale("Erreur : " + e.message, true); }
+  } else if (modeModale === "enregistrer") {
+    let nom;
+    try { nom = normaliserNomSauvegarde($("nom-fichier").value); }
+    catch (e) { statutModale("Erreur : " + e.message, true); return; }
+    const cible = dossier ? dossier + "/" + nom : nom;
+    try {
+      await sauvegarderDistantCible(cible);
+      fermerModale();
+    } catch (e) { statutModale("Erreur : " + e.message, true); }
+  }
 }
 
 function ouvrirLocal() { $("import-local").click(); }
@@ -214,15 +450,10 @@ async function demarrer() {
   $("jeton").value = localStorage.getItem("excali_jeton") || "";
   $("btn-jeton").onclick = () => {
     localStorage.setItem("excali_jeton", $("jeton").value.trim());
-    msg("jeton enregistré localement"); rafraichir().catch(e => msg(e.message));
+    msg("jeton enregistré localement");
   };
-  $("btn-haut").onclick = () => {
-    dossier = dossier.includes("/") ? dossier.slice(0, dossier.lastIndexOf("/")) : "";
-    rafraichir().catch(e => msg(e.message));
-  };
-  $("btn-actualiser").onclick = () => rafraichir().catch(e => msg(e.message));
-  $("btn-ouvrir-distant").onclick = () => ouvrirDistant().catch(e => msg(e.message));
-  $("btn-enregistrer-distant").onclick = () => sauvegarderDistant().catch(e => msg(e.message));
+  $("btn-ouvrir-distant").onclick = () => ouvrirModale("ouvrir");
+  $("btn-enregistrer-distant").onclick = () => ouvrirModale("enregistrer");
   $("btn-ouvrir-local").onclick = () => ouvrirLocal();
   $("btn-enregistrer-local").onclick = () => sauvegarderLocal();
   $("btn-nouveau").onclick = () => {
@@ -235,7 +466,51 @@ async function demarrer() {
     try { documentVersScene(JSON.parse($("json").value)); msg("JSON chargé"); }
     catch { msg("JSON invalide"); }
   };
-  $("btn-repli-enregistrer").onclick = () => sauvegarderDistant().catch(e => msg(e.message));
+  $("btn-repli-enregistrer").onclick = () => ouvrirModale("enregistrer");
+  // --- Modale : fermeture, navigation, clavier ---
+  $("btn-fermer").onclick = () => fermerModale();
+  $("btn-modale-annuler").onclick = () => fermerModale();
+  $("btn-parent").onclick = () => {
+    dossier = dossier.includes("/") ? dossier.slice(0, dossier.lastIndexOf("/")) : "";
+    rafraichirModale().catch(() => {});
+  };
+  $("btn-actualiser").onclick = () => rafraichirModale().catch(() => {});
+  $("btn-modale-ouvrir").onclick = () => validerModale().catch(() => {});
+  $("btn-modale-enregistrer").onclick = () => validerModale().catch(() => {});
+  $("nom-fichier").addEventListener("input", () => majPiedModale());
+  $("nom-fichier").addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); validerModale().catch(() => {}); }
+  });
+  $("voile").addEventListener("mousedown", (ev) => {
+    if (ev.target === $("voile")) fermerModale();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if ($("voile").hidden) return;
+    if (ev.key === "Escape") { ev.preventDefault(); fermerModale(); return; }
+    if (ev.key === "Tab") {
+      const focusables = [...$("modale").querySelectorAll("button, input")]
+        .filter((el) => !el.disabled && el.offsetParent !== null);
+      if (!focusables.length) return;
+      const premier = focusables[0];
+      const dernier = focusables[focusables.length - 1];
+      if (ev.shiftKey && document.activeElement === premier) {
+        ev.preventDefault(); dernier.focus();
+      } else if (!ev.shiftKey && document.activeElement === dernier) {
+        ev.preventDefault(); premier.focus();
+      }
+      return;
+    }
+    if ((ev.key === "ArrowDown" || ev.key === "ArrowUp") && modeModale) {
+      const entrees = [...$("modale-liste").querySelectorAll(".entree")];
+      if (!entrees.length) return;
+      const i = entrees.indexOf(document.activeElement);
+      ev.preventDefault();
+      const suivant = ev.key === "ArrowDown"
+        ? entrees[(i + 1 + entrees.length) % entrees.length]
+        : entrees[(i - 1 + entrees.length) % entrees.length];
+      suivant.focus();
+    }
+  });
   $("import-local").onchange = async (ev) => {
     const f = ev.target.files[0]; if (!f) return;
     try {
@@ -252,6 +527,7 @@ async function demarrer() {
   // Deep-link MCP « ouvrir dans Excalidraw » : #/chemin/vers.excalidraw.
   if (location.hash.startsWith("#/")) {
     fichierSel = decodeURIComponent(location.hash.slice(2));
+    dossier = dossierParent(fichierSel);
     $("courant").textContent = "Excalidraw/" + fichierSel;
   }
   try {
@@ -270,8 +546,9 @@ async function demarrer() {
     $("repli").style.display = "flex";
     msg("éditeur distant indisponible, repli JSON actif");
   }
-  if (localStorage.getItem("excali_jeton")) rafraichir().catch(e => msg(e.message));
-  else msg("renseignez le jeton distant pour lister la bibliothèque");
+  if (!localStorage.getItem("excali_jeton")) {
+    msg("renseignez le jeton distant pour lister la bibliothèque");
+  }
 }
 demarrer();
 </script>
