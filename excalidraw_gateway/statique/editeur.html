@@ -296,18 +296,22 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
             ? document.fonts.ready : Promise.resolve();
           await Promise.race([polices, new Promise((res) => setTimeout(res, 2000))]);
         } catch { /* metriques approchees : pas de blocage */ }
-        try {
-          const r = restaurerFn({ elements: bruts, appState },
-            { refreshDimensions: true, repairBindings: true });
-          if (r && Array.isArray(r.elements) && r.elements.length) {
-            elements = r.elements;
-            appState = { ...(r.appState || {}), ...appState };
-          }
-        } catch {
+        // Signature 0.18.0 verifiee dans le bundle epingle :
+        // restore({elements, appState}, overrides, carteLocale, options).
+        const OPTIONS_RESTORE = { repairBindings: true, refreshDimensions: true };
+        let restaure = null;
+        for (const appel of [
+          () => restaurerFn({ elements: bruts, appState }, null, null, OPTIONS_RESTORE),
+          () => restaurerFn({ elements: bruts, appState }),
+        ]) {
           try {
-            const r2 = restaurerFn({ elements: bruts, appState });
-            if (r2 && Array.isArray(r2.elements) && r2.elements.length) elements = r2.elements;
-          } catch { /* repli : elements tels quels */ }
+            const r = appel();
+            if (r && Array.isArray(r.elements) && r.elements.length) { restaure = r; break; }
+          } catch { /* forme suivante */ }
+        }
+        if (restaure) {
+          elements = restaure.elements;
+          appState = { ...(restaure.appState || {}), ...appState };
         }
       }
       docCourant = { ...doc, elements, appState };
