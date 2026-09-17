@@ -64,16 +64,24 @@ ELEMENTS_SCENE_ATTENDUS = [ELEMENTS_DEMO[1]]
 
 
 def _assert_rectangle_restaure(elements):
-    """Verifie la restauration serveur : valeurs fournies preservees, champs exigeants remplis."""
-    assert len(elements) == 1
+    """Verifie la restauration serveur + l'expansion `label` -> texte lie officiel."""
+    # excalidraw-mcp#22 : le shorthand `label` (squelette) n'est jamais persiste
+    # tel quel ; il est expanse en element texte lie (containerId + boundElements).
+    assert len(elements) == 2
     r = elements[0]
     assert r["type"] == "rectangle" and r["id"] == "r1"
     assert r["x"] == 100 and r["width"] == 200
-    assert r["label"] == {"text": "RAG", "fontSize": 20}
+    assert "label" not in r, "shorthand label ne doit jamais etre persiste"
     assert isinstance(r["seed"], int) and isinstance(r["versionNonce"], int)
-    assert r["boundElements"] == [] and r["groupIds"] == []
+    assert r["boundElements"] == [{"id": "r1_label", "type": "text"}] and r["groupIds"] == []
     assert r["isDeleted"] is False and r["locked"] is False
     assert r["angle"] == 0 and r["opacity"] == 100
+    t = elements[1]
+    assert t["type"] == "text" and t["id"] == "r1_label"
+    assert t["text"] == "RAG" and t["originalText"] == "RAG"
+    assert t["containerId"] == "r1" and t["fontSize"] == 20
+    assert t["fontFamily"] == 1 and t["textAlign"] == "center"
+    assert "label" not in t
     return r
 
 
@@ -604,10 +612,13 @@ def test_restaurer_element_minimaliste_upstream(environ):
     assert r["x"] == 25 and r["width"] == 1550 and r["roundness"] == {"type": 3}
     assert isinstance(r["seed"], int) and r["isDeleted"] is False
     assert r["boundElements"] == [] and r["index"] == "a0"
-    # Texte sans metriques : conserve tel quel (mesure cote editeur).
+    # Texte minimaliste : complete en texte officiel (estimation serveur,
+    # l'editeur affine via restore+refreshDimensions).
     t = bibliotheque.restaurer_element(
         {"type": "text", "x": 1, "y": 2, "text": "hello", "fontSize": 20}, 3)
-    assert t["text"] == "hello" and "width" not in t and t["index"] == "a3"
+    assert t["text"] == "hello" and t["originalText"] == "hello"
+    assert t["fontFamily"] == 1 and t["containerId"] is None
+    assert t["width"] > 0 and t["height"] > 0 and t["index"] == "a3"
     # Fleche sans points : repli geometrique.
     f = bibliotheque.restaurer_element(
         {"type": "arrow", "x": 0, "y": 0, "width": 10, "height": 5}, 0)
@@ -742,3 +753,63 @@ def test_api_http_jeton_requis_et_roundtrip(environ):
             assert r.status_code == 400
 
     _courir(_t())
+
+
+# --- fidelite labels (excalidraw-mcp#22, E2E ChatGPT 2026-09-17) -------------------------------
+
+def test_label_fleche_expande_au_milieu(environ):
+    """Une fleche `label:{text}` devient un texte lie au milieu, sans shorthand."""
+    els = [{"type": "arrow", "id": "a1", "x": 340, "y": 240, "width": 130, "height": 0,
+            "points": [[0, 0], [130, 0]], "endArrowhead": "arrow",
+            "label": {"text": "test", "fontSize": 16}}]
+    out = bibliotheque.restaurer_elements(els)
+    assert len(out) == 2
+    fleche, texte = out
+    assert "label" not in fleche
+    assert fleche["boundElements"] == [{"id": "a1_label", "type": "text"}]
+    assert texte["containerId"] == "a1" and texte["text"] == "test"
+    # Milieu geometrique (405, 240) moins demi-taille estimee.
+    assert abs(texte["x"] - (405 - texte["width"] / 2)) < 1e-6
+    assert abs(texte["y"] - (240 - texte["height"] / 2)) < 1e-6
+
+
+def test_label_idempotent_sans_doublon(environ):
+    """Re-restaurer un document deja officiel ne duplique rien."""
+    doc = bibliotheque.construire_document(ELEMENTS_DEMO)
+    assert sum(1 for e in doc["elements"] if e.get("type") == "text") == 1
+    reexp = bibliotheque.restaurer_elements(doc["elements"])
+    assert len(reexp) == len(doc["elements"]) == 2
+    assert all("label" not in e for e in reexp)
+
+
+def test_label_residuel_sur_officiel_retire_sans_doublon(environ):
+    """Shorthand residuel sur document deja officiel : retire, pas de doublon."""
+    doc = bibliotheque.construire_document(ELEMENTS_DEMO)
+    doc["elements"][0]["label"] = {"text": "Autre", "fontSize": 20}
+    out = bibliotheque.restaurer_elements(doc["elements"])
+    assert len(out) == 2
+    assert all("label" not in e for e in out)
+    assert sum(1 for e in out if e.get("type") == "text") == 1
+
+
+def test_preuves_e2e_chatgpt_fidelite(environ):
+    """Les deux preuves E2E doivent rendre tous leurs textes apres expansion."""
+    for premier, second, etiquette in [
+        ("Post-fix URL", "Second box", "test"),
+        ("ChatGPT E2E", "Excalidraw OK", "deep-link"),
+    ]:
+        els = [
+            {"type": "rectangle", "id": "g", "x": 120, "y": 190, "width": 220, "height": 100,
+             "label": {"text": premier, "fontSize": 22}},
+            {"type": "rectangle", "id": "d", "x": 470, "y": 190, "width": 220, "height": 100,
+             "label": {"text": second, "fontSize": 22}},
+            {"type": "arrow", "id": "f", "x": 340, "y": 240, "width": 130, "height": 0,
+             "points": [[0, 0], [130, 0]], "label": {"text": etiquette, "fontSize": 16}},
+        ]
+        out = bibliotheque.restaurer_elements(els)
+        textes = {e["text"] for e in out if e.get("type") == "text"}
+        assert textes == {premier, second, etiquette}
+        assert all("label" not in e for e in out)
+        for e in out:
+            if e.get("type") == "text":
+                assert e.get("containerId") in ("g", "d", "f")
