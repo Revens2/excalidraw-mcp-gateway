@@ -206,7 +206,7 @@ def restaurer_element(brut: dict, position: int) -> dict | None:
         if not isinstance(element.get("fontFamily"), int):
             element["fontFamily"] = 1
         conteneur = element.get("containerId")
-        if not isinstance(conteneur, (str, type(None))):
+        if not isinstance(conteneur, str):
             element["containerId"] = None
             conteneur = None
         if not isinstance(element.get("textAlign"), str):
