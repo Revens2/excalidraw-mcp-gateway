@@ -63,6 +63,96 @@ def nettoyer_elements(elements: list) -> list:
             if isinstance(e, dict) and e.get("type") not in ELEMENTS_NON_SCENE]
 
 
+# Types d'elements de scene connus (les autres dicts sont abandonnes :
+# l'editeur officiel ne sait pas les rendre).
+TYPES_SCENE = frozenset({
+    "rectangle", "ellipse", "diamond", "text", "arrow", "line",
+    "freedraw", "image", "frame", "magicframe", "embeddable",
+})
+
+# Champs geometriques exiges par famille (les textes sans metriques sont
+# mesures cote editeur via le `restore` officiel : pas de dimensions fakees).
+_GEOMETRIE_FORME = ("x", "y", "width", "height")
+_GEOMETRIE_TEXTE = ("x", "y")
+
+
+def _est_fini(valeur) -> bool:
+    return isinstance(valeur, (int, float)) and not isinstance(valeur, bool) \
+        and valeur == valeur and abs(valeur) != float("inf")
+
+
+def _nouvel_identifiant() -> str:
+    return "e" + secrets.token_hex(4)
+
+
+def restaurer_element(brut: dict, position: int) -> dict | None:
+    """Complete un element minimaliste upstream en element de scene standard.
+
+    Les checkpoints upstream (`create_view`/`read_checkpoint`) ne portent que
+    le strict necessaire (type, x, y, ...), sans les champs qu'Excalidraw exige
+    pour rendre (seed, version, boundElements, ...) : persistés tels quels, la
+    scene reste vide dans l'editeur officiel (canvas blanc, constate live
+    2026-09-17). Cette fonction ne remplit que les champs surs cote serveur
+    (identite, listes structurelles, defauts triviaux) sans jamais ecraser
+    une valeur fournie ; l'editeur applique ensuite le `restore` officiel
+    (metriques de texte, bindings). Retourne None si l'element est
+    inexploitable (type inconnu, geometrie absurde, texte sans texte,
+    image sans fichier).
+    """
+    if not isinstance(brut, dict):
+        return None
+    type_el = brut.get("type")
+    if type_el not in TYPES_SCENE:
+        return None
+    if type_el == "text" and not isinstance(brut.get("text"), str):
+        return None
+    requis = _GEOMETRIE_TEXTE if type_el == "text" else _GEOMETRIE_FORME
+    for cle in requis:
+        if not _est_fini(brut.get(cle)):
+            return None
+    if type_el == "image" and not isinstance(brut.get("fileId"), str):
+        return None
+    element = dict(brut)
+    identifiant = element.get("id")
+    element["id"] = identifiant if isinstance(identifiant, str) and identifiant else _nouvel_identifiant()
+    if not isinstance(element.get("seed"), int):
+        element["seed"] = secrets.randbits(31)
+    if not isinstance(element.get("version"), int):
+        element["version"] = 1
+    if not isinstance(element.get("versionNonce"), int):
+        element["versionNonce"] = secrets.randbits(31)
+    element["isDeleted"] = element.get("isDeleted") is True
+    element["groupIds"] = element["groupIds"] if isinstance(element.get("groupIds"), list) else []
+    element["boundElements"] = element["boundElements"] \
+        if isinstance(element.get("boundElements"), list) else []
+    if not isinstance(element.get("link"), (str, type(None))):
+        element["link"] = None
+    element["locked"] = element.get("locked") is True
+    if not _est_fini(element.get("angle")):
+        element["angle"] = 0
+    if not _est_fini(element.get("opacity")):
+        element["opacity"] = 100
+    if element.get("frameId") is not None and not isinstance(element.get("frameId"), str):
+        element["frameId"] = None
+    if not isinstance(element.get("index"), str):
+        element["index"] = f"a{position}"
+    element["updated"] = int(time.time() * 1000)
+    if type_el in ("arrow", "line") and not isinstance(element.get("points"), list):
+        element["points"] = [[0, 0], [float(element.get("width", 0)), float(element.get("height", 0))]]
+    return element
+
+
+def restaurer_elements(elements: list) -> list:
+    """Nettoie + restaure une liste d'elements ; vide si rien d'exploitable."""
+    nettoyes = nettoyer_elements(elements)
+    restaures = []
+    for position, brut in enumerate(nettoyes):
+        element = restaurer_element(brut, position)
+        if element is not None:
+            restaures.append(element)
+    return restaures
+
+
 class ErreurBibliotheque(ValueError):
     """Chemin ou document invalide (fail-closed : l'appelant repond en erreur)."""
 
@@ -231,11 +321,13 @@ def construire_document(elements: list, app_state: dict | None = None, source: s
     """Construit un document ``.excalidraw`` standard depuis des elements.
 
     Les pseudo-elements non-scene (``cameraUpdate`` upstream, ...) sont
-    retires : un document vide apres nettoyage est refuse (fail-closed).
+    retires et les elements minimalistes sont restaures (champs exiges par
+    l'editeur officiel) : un document vide apres nettoyage/restauration est
+    refuse (fail-closed).
     """
     if not isinstance(elements, list) or not elements:
         raise ErreurBibliotheque("aucun element a enregistrer")
-    scene = nettoyer_elements(elements)
+    scene = restaurer_elements(elements)
     if not scene:
         raise ErreurBibliotheque("aucun element de scene a enregistrer")
     return {
@@ -252,13 +344,14 @@ def enregistrer(relatif: str, document: dict) -> dict:
     """Ecrit atomiquement un document (tmp + rename, meme systeme de fichiers).
 
     Les pseudo-elements non-scene (``cameraUpdate`` upstream, ...) sont
-    retires avant validation/ecriture : ils ne sont jamais persistés, quel
-    que soit le chemin d'ecriture (API, outils MCP, autosave).
+    retires et les elements minimalistes restaures avant validation/ecriture :
+    ils ne sont jamais persistés tels quels, quel que soit le chemin
+    d'ecriture (API, outils MCP, autosave).
     """
     racine = racine_physique()
     rel = normaliser_relatif(relatif, fichier=True)
     if isinstance(document, dict) and isinstance(document.get("elements"), list):
-        document = {**document, "elements": nettoyer_elements(document["elements"])}
+        document = {**document, "elements": restaurer_elements(document["elements"])}
     valider_document(json.dumps(document, ensure_ascii=False))
     cible = _resoudre(racine, rel)
     cible.parent.mkdir(parents=True, exist_ok=True)

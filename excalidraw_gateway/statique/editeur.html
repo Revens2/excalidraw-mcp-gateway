@@ -203,6 +203,11 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
     let docCourant = null;
     let excaliAPI = null;
     let resolveAPI = null;
+    // Fonction `restore` officielle (@excalidraw/excalidraw), renseignee a
+    // l'import : normalise les elements minimalistes upstream (seed,
+    // version, bindings, metriques de texte avec les polices chargees),
+    // comme le fait excalidraw.com a l'ouverture d'un fichier.
+    let restaurerFn = null;
     // Promesse resolue par le callback excalidrawAPI au montage React.
     // Diagnostic 2026-09-17 : l'ancien drapeau etait leve de facon synchrone
     // juste apres render(), AVANT le montage effectif ; un fetch plus rapide
@@ -277,16 +282,38 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
           viewportZoomFactor: 0.85, maxZoom: 1, animate: false });
       } catch { /* API indisponible ou evolution : scene deja chargee */ }
     }
-    function documentVersScene(doc) {
-      docCourant = doc;
-      const elements = nettoyerElements(doc.elements);
-      const propre = { ...doc, elements,
-        // Viewport normalise : le zoom/scroll persiste est ignore (un zoom
-        // absurde ou un scroll incompatible ne doit jamais cadrer la scene).
-        appState: { viewBackgroundColor: (doc.appState || {}).viewBackgroundColor } };
-      $("json").value = JSON.stringify(propre, null, 2);
+    async function documentVersScene(doc) {
+      const bruts = nettoyerElements(doc.elements);
+      const fond = (doc.appState || {}).viewBackgroundColor;
+      let appState = (typeof fond === "string") ? { viewBackgroundColor: fond } : {};
+      let elements = bruts;
+      // Restauration officielle : sans elle, les elements minimalistes
+      // upstream (sans seed/version/metriques) laissent la scene vide
+      // (canvas blanc constate live 2026-09-17 sur les dessins ChatGPT).
+      if (typeof restaurerFn === "function" && bruts.length) {
+        try {
+          const polices = (document.fonts && document.fonts.ready)
+            ? document.fonts.ready : Promise.resolve();
+          await Promise.race([polices, new Promise((res) => setTimeout(res, 2000))]);
+        } catch { /* metriques approchees : pas de blocage */ }
+        try {
+          const r = restaurerFn({ elements: bruts, appState },
+            { refreshDimensions: true, repairBindings: true });
+          if (r && Array.isArray(r.elements) && r.elements.length) {
+            elements = r.elements;
+            appState = { ...(r.appState || {}), ...appState };
+          }
+        } catch {
+          try {
+            const r2 = restaurerFn({ elements: bruts, appState });
+            if (r2 && Array.isArray(r2.elements) && r2.elements.length) elements = r2.elements;
+          } catch { /* repli : elements tels quels */ }
+        }
+      }
+      docCourant = { ...doc, elements, appState };
+      $("json").value = JSON.stringify(docCourant, null, 2);
       if (excaliAPI) {
-        excaliAPI.updateScene({ elements, appState: propre.appState });
+        excaliAPI.updateScene({ elements, appState });
         cadrerScene();
       }
     }
@@ -440,7 +467,7 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
         await Promise.race([apiPrete,
           new Promise((res) => setTimeout(res, 15000))]);
       } catch { /* jamais rejetee : garde-fou */ }
-      documentVersScene(d.document);
+      await documentVersScene(d.document);
       rafraichirPuce();
       msg("ouvert : Excalidraw/" + fichierSel);
       ecrireHash(fichierSel);
@@ -498,8 +525,10 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
     }
     async function demarrer() {
       $("btn-repli-charger").onclick = () => {
-        try { documentVersScene(JSON.parse($("json").value)); msg("JSON chargé"); }
-        catch { msg("JSON invalide"); }
+        let doc;
+        try { doc = JSON.parse($("json").value); }
+        catch { msg("JSON invalide"); return; }
+        documentVersScene(doc).then(() => msg("JSON chargé"), () => msg("JSON invalide"));
       };
       $("btn-repli-enregistrer").onclick = () => ouvrirModale("enregistrer");
       // --- Modale : fermeture, navigation, clavier ---
@@ -574,7 +603,8 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
       try {
         const React = await import("react");
         const { createRoot } = await import("react-dom/client");
-        const { Excalidraw } = await import("@excalidraw/excalidraw");
+        const { Excalidraw, restore } = await import("@excalidraw/excalidraw");
+        restaurerFn = (typeof restore === "function") ? restore : null;
         const h = React.createElement;
         // Actions bibliothèque discrètes, intégrées au canvas officiel
         // (même pattern que l'app upstream : renderTopRightUI).

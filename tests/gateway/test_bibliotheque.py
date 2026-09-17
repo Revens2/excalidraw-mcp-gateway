@@ -57,9 +57,24 @@ ELEMENTS_DEMO = [
      "label": {"text": "RAG", "fontSize": 20}},
 ]
 
-# Apres nettoyage : le pseudo-element `cameraUpdate` (cadrage upstream,
-# jamais un element de scene) n'est pas persiste.
+# Apres nettoyage + restauration : le pseudo-element `cameraUpdate` (cadrage
+# upstream, jamais un element de scene) n'est pas persiste, et le rectangle
+# minimaliste est complete (champs exiges par l'editeur officiel).
 ELEMENTS_SCENE_ATTENDUS = [ELEMENTS_DEMO[1]]
+
+
+def _assert_rectangle_restaure(elements):
+    """Verifie la restauration serveur : valeurs fournies preservees, champs exigeants remplis."""
+    assert len(elements) == 1
+    r = elements[0]
+    assert r["type"] == "rectangle" and r["id"] == "r1"
+    assert r["x"] == 100 and r["width"] == 200
+    assert r["label"] == {"text": "RAG", "fontSize": 20}
+    assert isinstance(r["seed"], int) and isinstance(r["versionNonce"], int)
+    assert r["boundElements"] == [] and r["groupIds"] == []
+    assert r["isDeleted"] is False and r["locked"] is False
+    assert r["angle"] == 0 and r["opacity"] == 100
+    return r
 
 
 @pytest.fixture()
@@ -161,7 +176,7 @@ def test_crud_complet(environ):
     assert vue["dossiers"] == ["sous"]
     assert [f["logique"] for f in vue["fichiers"]] == ["Excalidraw/rag/schema.excalidraw"]
     relu = bibliotheque.charger("rag/schema.excalidraw")
-    assert relu["document"]["elements"] == ELEMENTS_SCENE_ATTENDUS
+    _assert_rectangle_restaure(relu["document"]["elements"])
     dep = bibliotheque.deplacer("rag/schema.excalidraw", "rag/schema-v2.excalidraw")
     assert dep["vers"] == "Excalidraw/rag/schema-v2.excalidraw"
     with pytest.raises(ErreurBibliotheque):
@@ -371,7 +386,7 @@ def test_outils_locaux_sans_upstream(environ):
                 contenu = json.loads(
                     (bibliotheque.racine_physique() / "rag" / "schema-v2.excalidraw").read_text())
                 assert contenu["type"] == "excalidraw"
-                assert contenu["elements"] == ELEMENTS_SCENE_ATTENDUS
+                _assert_rectangle_restaure(contenu["elements"])
         finally:
             serveur.should_exit = True
             sock.close()
@@ -406,9 +421,13 @@ def test_create_view_persistant_bout_en_bout(environ):
                 # Le parametre local n'a pas fuite vers l'upstream.
                 assert recus[0]["name"] == "create_view"
                 assert "enregistrer_sous" not in recus[0]["args"]
-                # Fichier = elements resolus du checkpoint (r9), pas la requete brute.
+                # Fichier = elements resolus du checkpoint (r9), restaures
+                # (le stub renvoie un rectangle minimaliste, complete a l'ecriture).
                 relu = bibliotheque.charger("rag/ia.excalidraw")
-                assert relu["document"]["elements"] == _CHECKPOINT_ELEMENTS
+                assert len(relu["document"]["elements"]) == 1
+                r9 = relu["document"]["elements"][0]
+                assert (r9["id"], r9["x"], r9["width"]) == ("r9", 1, 10)
+                assert isinstance(r9["seed"], int) and r9["boundElements"] == []
         finally:
             serveur.should_exit = True
             sock.close()
@@ -467,9 +486,10 @@ def test_create_view_autosave_par_defaut(environ):
                 # Le parametre local ne fuit jamais vers l'upstream.
                 assert recus[0]["name"] == "create_view"
                 assert "enregistrer_sous" not in recus[0]["args"]
-                # Fichier = elements resolus du checkpoint (r9), pas la requete brute.
+                # Fichier = elements resolus du checkpoint (r9), restaures.
                 relu = bibliotheque.charger(structure["fichier"].removeprefix("Excalidraw/"))
-                assert relu["document"]["elements"] == _CHECKPOINT_ELEMENTS
+                assert len(relu["document"]["elements"]) == 1
+                assert relu["document"]["elements"][0]["id"] == "r9"
                 # Second appel sans chemin -> second fichier (pas d'ecrasement).
                 r2 = await _creer(4)
                 f2 = r2.json()["result"]["structuredContent"]["fichier"]
@@ -550,7 +570,7 @@ def test_page_bibliotheque_redirige_editeur(environ):
 def test_construire_document_filtre_camera_update(environ):
     """Le pseudo-element `cameraUpdate` upstream n'est jamais persiste."""
     doc = bibliotheque.construire_document(ELEMENTS_DEMO)
-    assert doc["elements"] == ELEMENTS_SCENE_ATTENDUS
+    _assert_rectangle_restaure(doc["elements"])
     assert all(e.get("type") != "cameraUpdate" for e in doc["elements"])
     # Checkpoint ne contenant QUE du cadrage -> refuse (fail-closed),
     # l'appelant signale l'echec en preservant le rendu.
@@ -566,13 +586,43 @@ def test_enregistrer_filtre_camera_update_quel_que_soit_le_chemin(environ):
            "appState": {}, "files": {}}
     bibliotheque.enregistrer("rag/nettoye.excalidraw", doc)
     relu = bibliotheque.charger("rag/nettoye.excalidraw")
-    assert relu["document"]["elements"] == ELEMENTS_SCENE_ATTENDUS
+    _assert_rectangle_restaure(relu["document"]["elements"])
     # Document ne contenant que du cadrage -> 400 (fail-closed).
     with pytest.raises(ErreurBibliotheque):
         bibliotheque.enregistrer("rag/vide.excalidraw",
                                  {"type": "excalidraw", "version": 2,
                                   "elements": [ELEMENTS_DEMO[0]],
                                   "appState": {}, "files": {}})
+
+
+def test_restaurer_element_minimaliste_upstream(environ):
+    """Elements minimalistes upstream -> scene standard (valeurs preservees)."""
+    sparse = {"type": "rectangle", "id": "z", "x": 25, "y": 90,
+              "width": 1550, "height": 160, "strokeColor": "#f59e0b",
+              "roundness": {"type": 3}}
+    r = bibliotheque.restaurer_element(dict(sparse), 0)
+    assert r["x"] == 25 and r["width"] == 1550 and r["roundness"] == {"type": 3}
+    assert isinstance(r["seed"], int) and r["isDeleted"] is False
+    assert r["boundElements"] == [] and r["index"] == "a0"
+    # Texte sans metriques : conserve tel quel (mesure cote editeur).
+    t = bibliotheque.restaurer_element(
+        {"type": "text", "x": 1, "y": 2, "text": "hello", "fontSize": 20}, 3)
+    assert t["text"] == "hello" and "width" not in t and t["index"] == "a3"
+    # Fleche sans points : repli geometrique.
+    f = bibliotheque.restaurer_element(
+        {"type": "arrow", "x": 0, "y": 0, "width": 10, "height": 5}, 0)
+    assert f["points"] == [[0, 0], [10.0, 5.0]]
+    # Inexploitables : type inconnu, geometrie absurde, texte sans texte,
+    # image sans fichier, cameraUpdate.
+    assert bibliotheque.restaurer_element({"type": "nope", "x": 0, "y": 0}, 0) is None
+    assert bibliotheque.restaurer_element({"type": "rectangle", "x": 0}, 0) is None
+    assert bibliotheque.restaurer_element({"type": "text", "x": 0, "y": 0}, 0) is None
+    assert bibliotheque.restaurer_element(
+        {"type": "image", "x": 0, "y": 0, "width": 1, "height": 1}, 0) is None
+    assert bibliotheque.restaurer_elements(ELEMENTS_DEMO) != []
+    assert all(e["type"] != "cameraUpdate"
+               for e in bibliotheque.restaurer_elements(ELEMENTS_DEMO))
+    assert bibliotheque.restaurer_elements([{"type": "cameraUpdate"}]) == []
 
 
 def test_url_ouverture_encode_espaces(environ, monkeypatch):
@@ -601,9 +651,10 @@ def test_page_editeur_correctifs_2026_09_17(environ):
             assert 'addEventListener("hashchange"' in r.text
             assert "apiPrete" in r.text
             assert "encoderChemin" in r.text and "decoderChemin" in r.text
-            # Bug 4 — cadrage natif borne, pseudo-elements filtres.
+            # Bug 4 — cadrage natif borne, pseudo-elements filtres, restore officiel.
             assert "scrollToContent" in r.text and "fitToViewport" in r.text
             assert "maxZoom" in r.text and "cameraUpdate" in r.text
+            assert "restaurerFn" in r.text
 
     _courir(_t())
 
@@ -668,7 +719,7 @@ def test_api_http_jeton_requis_et_roundtrip(environ):
                             headers=_h_biblio())
             assert r.status_code == 200, r.text
             r = await c.get("/api/document?chemin=rag/http.excalidraw", headers=_h_biblio())
-            assert r.json()["document"]["elements"] == ELEMENTS_SCENE_ATTENDUS
+            _assert_rectangle_restaure(r.json()["document"]["elements"])
             r = await c.get("/api/document?chemin=../fuite.excalidraw", headers=_h_biblio())
             assert r.status_code == 400
             r = await c.put("/api/document?chemin=rag/mauvais.excalidraw",
