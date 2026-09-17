@@ -22,6 +22,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from urllib.parse import quote
 
 import httpx
 
@@ -56,12 +57,18 @@ def url_ouverture(ctx: ContexteLocal, chemin_relatif: str) -> str:
     (editeur prive NetBird, ex. ``http://10.200.114.203:8130/editeur``),
     il est utilise tel quel ; sinon, repli historique sur le montage
     public ``<base>/excalidraw/editeur``.
+
+    Le fragment est encode par segment (espaces et caracteres usuels des
+    noms de fichiers supportes, ``/`` conserves comme separateurs) :
+    un lien brut avec espaces casserait le markdown ChatGPT et le hash.
+    L'editeur decode par segment (``decoderChemin``).
     """
+    fragment = "/".join(quote(seg, safe="") for seg in chemin_relatif.split("/"))
     prefixe = os.environ.get(NOM_ENV_URL_EDITEUR, "").strip().rstrip("/")
     if prefixe:
-        return f"{prefixe}#/{chemin_relatif}"
+        return f"{prefixe}#/{fragment}"
     base = (ctx.base_ouverture or "https://mymcps.duckdns.org").rstrip("/")
-    return f"{base}/excalidraw/editeur#/{chemin_relatif}"
+    return f"{base}/excalidraw/editeur#/{fragment}"
 
 
 def _schema_objet(proprietes: dict, requis: list[str], description: str = "") -> dict:

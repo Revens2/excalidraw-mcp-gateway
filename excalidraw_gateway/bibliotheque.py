@@ -46,6 +46,22 @@ LONGUEUR_MAX_CHEMIN = 512
 # courante. Tout le reste (dont ``..`` traite separement) est refuse.
 _SEGMENT_OK = re.compile(r"^[\w][\w .()+\-]*$", re.UNICODE)
 
+# Pseudo-elements emis par l'outil upstream `create_view` (indication de cadrage
+# camera : `{"type": "cameraUpdate", "width": ..., "height": ..., "x": ..., "y": ...}`),
+# presents dans chaque checkpoint relu. Ce ne sont PAS des elements de scene
+# Excalidraw : persistés tels quels, ils cassent le rendu et le cadrage dans
+# l'editeur officiel (canvas vide, bouton "Scroll back to content" inoperant ;
+# constate live 2026-09-17 sur les dessins generes par ChatGPT). Filtres a
+# l'ecriture (jamais persistés) ; l'editeur re-filtre a la lecture pour les
+# fichiers deja pollues (disque inchange, re-sauvegarde naturelle ensuite).
+ELEMENTS_NON_SCENE = frozenset({"cameraUpdate"})
+
+
+def nettoyer_elements(elements: list) -> list:
+    """Retire les pseudo-elements non-scene (ex. `cameraUpdate` upstream)."""
+    return [e for e in elements
+            if isinstance(e, dict) and e.get("type") not in ELEMENTS_NON_SCENE]
+
 
 class ErreurBibliotheque(ValueError):
     """Chemin ou document invalide (fail-closed : l'appelant repond en erreur)."""
@@ -212,23 +228,37 @@ def valider_document(brut: str) -> dict:
 
 
 def construire_document(elements: list, app_state: dict | None = None, source: str = "") -> dict:
-    """Construit un document ``.excalidraw`` standard depuis des elements."""
+    """Construit un document ``.excalidraw`` standard depuis des elements.
+
+    Les pseudo-elements non-scene (``cameraUpdate`` upstream, ...) sont
+    retires : un document vide apres nettoyage est refuse (fail-closed).
+    """
     if not isinstance(elements, list) or not elements:
         raise ErreurBibliotheque("aucun element a enregistrer")
+    scene = nettoyer_elements(elements)
+    if not scene:
+        raise ErreurBibliotheque("aucun element de scene a enregistrer")
     return {
         "type": "excalidraw",
         "version": 2,
         "source": source or "https://mymcps.duckdns.org/excalidraw/bibliotheque",
-        "elements": elements,
+        "elements": scene,
         "appState": app_state if isinstance(app_state, dict) else {},
         "files": {},
     }
 
 
 def enregistrer(relatif: str, document: dict) -> dict:
-    """Ecrit atomiquement un document (tmp + rename, meme systeme de fichiers)."""
+    """Ecrit atomiquement un document (tmp + rename, meme systeme de fichiers).
+
+    Les pseudo-elements non-scene (``cameraUpdate`` upstream, ...) sont
+    retires avant validation/ecriture : ils ne sont jamais persistés, quel
+    que soit le chemin d'ecriture (API, outils MCP, autosave).
+    """
     racine = racine_physique()
     rel = normaliser_relatif(relatif, fichier=True)
+    if isinstance(document, dict) and isinstance(document.get("elements"), list):
+        document = {**document, "elements": nettoyer_elements(document["elements"])}
     valider_document(json.dumps(document, ensure_ascii=False))
     cible = _resoudre(racine, rel)
     cible.parent.mkdir(parents=True, exist_ok=True)

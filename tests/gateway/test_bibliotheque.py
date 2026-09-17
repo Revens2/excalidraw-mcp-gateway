@@ -57,6 +57,10 @@ ELEMENTS_DEMO = [
      "label": {"text": "RAG", "fontSize": 20}},
 ]
 
+# Apres nettoyage : le pseudo-element `cameraUpdate` (cadrage upstream,
+# jamais un element de scene) n'est pas persiste.
+ELEMENTS_SCENE_ATTENDUS = [ELEMENTS_DEMO[1]]
+
 
 @pytest.fixture()
 def environ(tmp_path, monkeypatch):
@@ -157,7 +161,7 @@ def test_crud_complet(environ):
     assert vue["dossiers"] == ["sous"]
     assert [f["logique"] for f in vue["fichiers"]] == ["Excalidraw/rag/schema.excalidraw"]
     relu = bibliotheque.charger("rag/schema.excalidraw")
-    assert relu["document"]["elements"] == ELEMENTS_DEMO
+    assert relu["document"]["elements"] == ELEMENTS_SCENE_ATTENDUS
     dep = bibliotheque.deplacer("rag/schema.excalidraw", "rag/schema-v2.excalidraw")
     assert dep["vers"] == "Excalidraw/rag/schema-v2.excalidraw"
     with pytest.raises(ErreurBibliotheque):
@@ -367,7 +371,7 @@ def test_outils_locaux_sans_upstream(environ):
                 contenu = json.loads(
                     (bibliotheque.racine_physique() / "rag" / "schema-v2.excalidraw").read_text())
                 assert contenu["type"] == "excalidraw"
-                assert contenu["elements"] == ELEMENTS_DEMO
+                assert contenu["elements"] == ELEMENTS_SCENE_ATTENDUS
         finally:
             serveur.should_exit = True
             sock.close()
@@ -543,6 +547,67 @@ def test_page_bibliotheque_redirige_editeur(environ):
     _courir(_t())
 
 
+def test_construire_document_filtre_camera_update(environ):
+    """Le pseudo-element `cameraUpdate` upstream n'est jamais persiste."""
+    doc = bibliotheque.construire_document(ELEMENTS_DEMO)
+    assert doc["elements"] == ELEMENTS_SCENE_ATTENDUS
+    assert all(e.get("type") != "cameraUpdate" for e in doc["elements"])
+    # Checkpoint ne contenant QUE du cadrage -> refuse (fail-closed),
+    # l'appelant signale l'echec en preservant le rendu.
+    with pytest.raises(ErreurBibliotheque):
+        bibliotheque.construire_document([ELEMENTS_DEMO[0]])
+    with pytest.raises(ErreurBibliotheque):
+        bibliotheque.construire_document([])
+
+
+def test_enregistrer_filtre_camera_update_quel_que_soit_le_chemin(environ):
+    """`enregistrer` (API PUT, outils, autosave) ne persiste jamais cameraUpdate."""
+    doc = {"type": "excalidraw", "version": 2, "elements": ELEMENTS_DEMO,
+           "appState": {}, "files": {}}
+    bibliotheque.enregistrer("rag/nettoye.excalidraw", doc)
+    relu = bibliotheque.charger("rag/nettoye.excalidraw")
+    assert relu["document"]["elements"] == ELEMENTS_SCENE_ATTENDUS
+    # Document ne contenant que du cadrage -> 400 (fail-closed).
+    with pytest.raises(ErreurBibliotheque):
+        bibliotheque.enregistrer("rag/vide.excalidraw",
+                                 {"type": "excalidraw", "version": 2,
+                                  "elements": [ELEMENTS_DEMO[0]],
+                                  "appState": {}, "files": {}})
+
+
+def test_url_ouverture_encode_espaces(environ, monkeypatch):
+    """Deep-link : espaces et caracteres usuels encodes par segment."""
+    ctx = ContexteLocal(upstream="http://127.0.0.1:9", base_ouverture="https://biblio.example.test")
+    monkeypatch.setenv(NOM_ENV_URL_EDITEUR, "http://10.200.114.203:8130/editeur")
+    assert url_ouverture(ctx, "rag/mon schema (v2).excalidraw") == \
+        "http://10.200.114.203:8130/editeur#/rag/mon%20schema%20%28v2%29.excalidraw"
+    # Chemins simples inchanges (compatibilite des liens existants).
+    assert url_ouverture(ctx, "rag/schema.excalidraw") == \
+        "http://10.200.114.203:8130/editeur#/rag/schema.excalidraw"
+
+
+def test_page_editeur_correctifs_2026_09_17(environ):
+    """Editeur : favicon, icones modale, deep-link robuste, cadrage natif."""
+    async def _t():
+        async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
+            r = await c.get("/editeur")
+            assert r.status_code == 200, r.status_code
+            # Bug 1 — favicon : logomark inline, zero requete reseau.
+            assert 'rel="icon"' in r.text and "data:image/svg+xml" in r.text
+            # Bug 2 — icones modale contraintes explicitement.
+            assert ".entree svg" in r.text and "20px" in r.text
+            assert ".modale-pied" in r.text and ".zone-nom" in r.text
+            # Bug 3 — deep-link : ecoute hashchange + attente API + encodage.
+            assert 'addEventListener("hashchange"' in r.text
+            assert "apiPrete" in r.text
+            assert "encoderChemin" in r.text and "decoderChemin" in r.text
+            # Bug 4 — cadrage natif borne, pseudo-elements filtres.
+            assert "scrollToContent" in r.text and "fitToViewport" in r.text
+            assert "maxZoom" in r.text and "cameraUpdate" in r.text
+
+    _courir(_t())
+
+
 def test_url_ouverture_editeur_prive_parametrable(environ, monkeypatch):
     """Deep-link : EXCALIDRAW_URL_EDITEUR prioritaire, repli historique sinon."""
     ctx = ContexteLocal(upstream="http://127.0.0.1:9", base_ouverture="https://biblio.example.test")
@@ -603,7 +668,7 @@ def test_api_http_jeton_requis_et_roundtrip(environ):
                             headers=_h_biblio())
             assert r.status_code == 200, r.text
             r = await c.get("/api/document?chemin=rag/http.excalidraw", headers=_h_biblio())
-            assert r.json()["document"]["elements"] == ELEMENTS_DEMO
+            assert r.json()["document"]["elements"] == ELEMENTS_SCENE_ATTENDUS
             r = await c.get("/api/document?chemin=../fuite.excalidraw", headers=_h_biblio())
             assert r.status_code == 400
             r = await c.put("/api/document?chemin=rag/mauvais.excalidraw",
