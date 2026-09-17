@@ -65,6 +65,14 @@ def url_ouverture(ctx: ContexteLocal, chemin_relatif: str) -> str:
     """
     fragment = "/".join(quote(seg, safe="") for seg in chemin_relatif.split("/"))
     prefixe = os.environ.get(NOM_ENV_URL_EDITEUR, "").strip().rstrip("/")
+    # Robustesse 2026-09-17 (constat ChatGPT E2E : `.../editeurn#/...`) : un
+    # fichier .env edite a la main peut contenir une sequence d'echappement
+    # litterale (backslash + lettre, ex. ``\\n``) au lieu d'un vrai saut de
+    # ligne. ``strip()`` ne la retire pas. Ces suffixes ne sont jamais
+    # legitimes en fin d'URL d'editeur : on les degage avant usage.
+    while prefixe.endswith("\\n") or prefixe.endswith("\\r") or prefixe.endswith("\\t"):
+        prefixe = prefixe[:-2].strip().rstrip("/").rstrip("\\").strip().rstrip("/")
+    prefixe = prefixe.rstrip("\\").strip().rstrip("/")
     if prefixe:
         return f"{prefixe}#/{fragment}"
     base = (ctx.base_ouverture or "https://mymcps.duckdns.org").rstrip("/")

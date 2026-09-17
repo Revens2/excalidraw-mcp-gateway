@@ -670,6 +670,21 @@ def test_url_ouverture_editeur_prive_parametrable(environ, monkeypatch):
         "https://biblio.example.test/excalidraw/editeur#/rag/schema.excalidraw"
 
 
+def test_url_ouverture_robuste_echappements_2026_09_17(environ, monkeypatch):
+    """Non-regression ChatGPT E2E : sequence ``\\n`` litterale en fin d'env."""
+    ctx = ContexteLocal(upstream="http://127.0.0.1:9", base_ouverture="https://biblio.example.test")
+    # Cas reel constate en prod : `.../editeurn#/...` (backslash-n residuel).
+    monkeypatch.setenv(NOM_ENV_URL_EDITEUR, "http://10.200.114.203:8130/editeur\\n")
+    assert url_ouverture(ctx, "ia/dessin-20260917-213431-2be091.excalidraw") == \
+        "http://10.200.114.203:8130/editeur#/ia/dessin-20260917-213431-2be091.excalidraw"
+    monkeypatch.setenv(NOM_ENV_URL_EDITEUR, "http://10.200.114.203:8130/editeur\\r\\n")
+    assert url_ouverture(ctx, "rag/schema.excalidraw") == \
+        "http://10.200.114.203:8130/editeur#/rag/schema.excalidraw"
+    monkeypatch.setenv(NOM_ENV_URL_EDITEUR, "http://10.200.114.203:8130/editeur/ ")
+    assert url_ouverture(ctx, "rag/schema.excalidraw") == \
+        "http://10.200.114.203:8130/editeur#/rag/schema.excalidraw"
+
+
 def test_biblio_ecriture_refusee_en_lecture(environ):
     async def _t():
         serveur, url, sock, recus = _serveur_stub()
