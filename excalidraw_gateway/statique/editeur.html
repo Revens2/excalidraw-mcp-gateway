@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
 <title>Excalidraw</title>
 <!-- Favicon : logomark officiel Excalidraw (public/favicon.svg upstream), inline data-URI :
      zero requete reseau, aucun changement nginx (vhost prive : /favicon.ico -> 204 voulu, / -> 444). -->
@@ -36,11 +37,17 @@
   ouvrant la modale file-browser (ile Excalidraw sur overlay).
   Canvas plein ecran ; puce de statut discrete en bas a gauche.
   Fichiers locaux (ouvrir/enregistrer) : menu natif Excalidraw.
+
+  Theme (2026-09-18) : sombre natif 0.18.0 par defaut (fini le forçage
+  `color-scheme: light` + `theme: "light"`), toggle natif persistant
+  (localStorage `excalidraw-theme`, preference locale hors .excalidraw),
+  customs (boutons, puce, modale, repli) harmonises via
+  html[data-theme="dark"]. Le clair reste accessible via le toggle.
 -->
 <link rel="stylesheet" href="https://esm.sh/@excalidraw/excalidraw@0.18.0/dist/prod/index.css"
   integrity="sha384-P2m2pozVIvqraZqVzVN3xTtfbe013MLWklwuLToXT3r+H03GIi1MtrjING9vCLlg" crossorigin="anonymous">
 <style>
-:root { color-scheme: light; --violet: #6965db; --fond-selection: #dbe4ff; }
+:root { color-scheme: dark light; --violet: #6965db; --fond-selection: #dbe4ff; }
 html, body { margin: 0; height: 100%; }
 body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
 button { cursor: pointer; }
@@ -129,6 +136,39 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
   .ile { max-height: 92vh; font-size: 0.9rem; }
   .modale-liste { max-height: 52vh; min-height: 140px; }
 }
+/* --- Theme sombre natif (defaut) : customs harmonises avec le canvas ---
+   Le clair garde les styles ci-dessus a l'identique. Le sombre s'active
+   via html[data-theme="dark"], pose par le JS d'apres la preference
+   persistee (localStorage, defaut "dark") et le toggle natif Excalidraw. */
+html[data-theme="dark"] .biblio-btn { background: #23232f; color: #e9e9f0; border-color: #3d3d52; }
+html[data-theme="dark"] .biblio-btn:hover { background: #2e2e3d; }
+html[data-theme="dark"] .biblio-btn-primaire { background: var(--violet); border-color: var(--violet); color: #fff; }
+html[data-theme="dark"] .biblio-btn-primaire:hover { background: #5753c9; }
+html[data-theme="dark"] #puce { background: rgba(35,35,47,.94); color: #c9c9d6; border-color: #3d3d52; }
+html[data-theme="dark"] #repli { background: #1e1e2e; color: #e9e9f0; }
+html[data-theme="dark"] #repli textarea { background: #23232f; color: #e9e9f0; border: 1px solid #3d3d52; }
+html[data-theme="dark"] .ile { background: #23232f; color: #e9e9f0; border-color: #3d3d52; }
+html[data-theme="dark"] .modale-entete { border-bottom-color: #3d3d52; }
+html[data-theme="dark"] .modale-actions-entete button { border-color: #3d3d52; background: #23232f; color: #e9e9f0; }
+html[data-theme="dark"] .modale-actions-entete button:hover { background: #2e2e3d; }
+html[data-theme="dark"] .fil { border-bottom-color: #3d3d52; }
+html[data-theme="dark"] .fil .sep { color: #77778a; }
+html[data-theme="dark"] .fil .courant { color: #c9c9d6; }
+html[data-theme="dark"] .modale-statut { color: #a9a9bb; }
+html[data-theme="dark"] .modale-statut.erreur { color: #ff8080; }
+html[data-theme="dark"] .entree { color: #e9e9f0; }
+html[data-theme="dark"] .entree:hover { background: #2e2e3d; }
+html[data-theme="dark"] .entree.fichier[aria-selected="true"] { background: rgba(105,101,219,.35); border-color: var(--violet); }
+html[data-theme="dark"] .modale-liste .vide { color: #9999ab; }
+html[data-theme="dark"] .zone-nom { border-top-color: #3d3d52; }
+html[data-theme="dark"] .zone-nom label { color: #a9a9bb; }
+html[data-theme="dark"] .zone-nom input { background: #1e1e2e; color: #e9e9f0; border-color: #55556a; }
+html[data-theme="dark"] .dossier-courant { color: #9999ab; }
+html[data-theme="dark"] .modale-selection { color: #a9a9bb; }
+html[data-theme="dark"] .modale-pied button { border-color: #3d3d52; background: #23232f; color: #e9e9f0; }
+html[data-theme="dark"] .modale-pied button:hover { background: #2e2e3d; }
+html[data-theme="dark"] .modale-pied button.action { background: var(--violet); border-color: var(--violet); color: #fff; }
+html[data-theme="dark"] .modale-pied button.action:hover { background: #5753c9; }
     </style>
     <script type="importmap">
     {"imports": {
@@ -216,6 +256,24 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
     let modeModale = null;   // "ouvrir" | "enregistrer" | null
     let dernierFocus = null;
     let message = "";
+    // --- Theme sombre natif par defaut, toggle persistant ---
+    // Cle dediee (jamais de secret) : le theme est une preference locale,
+    // pas une propriete du dessin (non persistee dans les .excalidraw).
+    const CLE_THEME = "excalidraw-theme";
+    const lireTheme = () => {
+      try {
+        const t = localStorage.getItem(CLE_THEME);
+        return (t === "light" || t === "dark") ? t : "dark";
+      } catch { return "dark"; }
+    };
+    let themeCourant = lireTheme();
+    const appliquerThemeDocument = (t) => {
+      try { localStorage.setItem(CLE_THEME, t); } catch { /* stockage indisponible */ }
+      document.documentElement.dataset.theme = t;
+      document.documentElement.style.colorScheme = (t === "dark") ? "dark light" : "light dark";
+    };
+    // Pose immediate (avant le montage React) : pas de flash clair.
+    appliquerThemeDocument(themeCourant);
 
     // Pseudo-elements emis par l'outil upstream create_view (indication de
     // cadrage camera), persistés tels quels dans les .excalidraw generes par
@@ -285,7 +343,11 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
     async function documentVersScene(doc) {
       const bruts = nettoyerElements(doc.elements);
       const fond = (doc.appState || {}).viewBackgroundColor;
-      let appState = (typeof fond === "string") ? { viewBackgroundColor: fond } : {};
+      // Theme = preference locale persistee (sombre par defaut), jamais le
+      // contenu du fichier : sans cela le restore officiel retomberait sur
+      // THEME.LIGHT et re-forcerait le clair a chaque ouverture.
+      let appState = { theme: themeCourant };
+      if (typeof fond === "string") appState.viewBackgroundColor = fond;
       let elements = bruts;
       // Restauration officielle : sans elle, les elements minimalistes
       // upstream (sans seed/version/metriques) laissent la scene vide
@@ -620,12 +682,33 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
             onClick: () => ouvrirModale("enregistrer") }, "Enregistrer"),
           h("button", { type: "button", className: "biblio-btn", title: "Repartir d'un dessin vide",
             onClick: () => nouveauDessin() }, "Nouveau"));
-        const App = () => h("div", { className: "excalidraw-wrapper", style: { height: "100%" } },
-          h(Excalidraw, { excalidrawAPI: (api2) => { excaliAPI = api2; if (resolveAPI) resolveAPI(); },
-            theme: "light",
-            renderTopRightUI: () => h(ActionsBiblio, null),
-            initialData: docCourant ? { elements: nettoyerElements(docCourant.elements),
-              appState: docCourant.appState } : null }));
+        // Theme controle cote hote (pattern doc 0.18.0) : la prop fixe le
+        // defaut (sombre), UIOptions.canvasActions.toggleTheme expose le
+        // toggle natif, onChange re-synchronise + persiste la preference.
+        const changerTheme = (t, setTheme) => {
+          if ((t === "light" || t === "dark") && t !== themeCourant) {
+            themeCourant = t;
+            appliquerThemeDocument(t);
+            if (typeof setTheme === "function") setTheme(t);
+          }
+        };
+        const App = () => {
+          const [theme, setTheme] = React.useState(themeCourant);
+          const auChangement = (_elements, etat) => {
+            if (etat && (etat.theme === "light" || etat.theme === "dark")) {
+              changerTheme(etat.theme, setTheme);
+            }
+          };
+          return h("div", { className: "excalidraw-wrapper", style: { height: "100%" } },
+            h(Excalidraw, { excalidrawAPI: (api2) => { excaliAPI = api2; if (resolveAPI) resolveAPI(); },
+              theme,
+              UIOptions: { canvasActions: { toggleTheme: true } },
+              onChange: auChangement,
+              renderTopRightUI: () => h(ActionsBiblio, null),
+              initialData: docCourant ? { elements: nettoyerElements(docCourant.elements),
+                appState: { ...(docCourant.appState || {}), theme } }
+                : { appState: { theme } } }));
+        };
         createRoot($("scene")).render(h(App));
         // Le chargement deep-link a deja demarre plus haut (fetch + attente
         // apiPrete) : aucun re-chargement ici, pas de course init/fetch.
