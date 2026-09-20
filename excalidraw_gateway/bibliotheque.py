@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,11 @@ RACINE_LOGIQUE = "Excalidraw"
 
 # Extension obligatoire des documents persistants.
 EXTENSION = ".excalidraw"
+
+# Sous-dossier dedie aux creations IA : l'autosave de `create_view` (sans
+# `enregistrer_sous`) y range ses fichiers, sans jamais toucher aux dossiers
+# humains existants.
+DOSSIER_IA = "ia"
 
 # Garde-fous de taille (alignes sur le MCP : 5 Mo max par entree).
 TAILLE_MAX_DOC_OCTETS = 5 * 1024 * 1024
@@ -90,6 +96,36 @@ def normaliser_relatif(brut: str, *, fichier: bool) -> str:
     if fichier and not texte.lower().endswith(EXTENSION):
         raise ErreurBibliotheque(f"le document doit se terminer par {EXTENSION}")
     return texte
+
+
+def generer_autosave(prefixe: str = "dessin", *, horodatage: str | None = None,
+                     alea: str | None = None) -> str:
+    """Genere un chemin relatif d'autosave sous ``DOSSIER_IA``, sans collision.
+
+    Format : ``ia/<prefixe>-<horodatage>-<alea>.excalidraw`` (ex.
+    ``ia/dessin-20260916-003000-a1b2c3.excalidraw``). Le prefixe est assaini
+    (minuscules, ``[^a-z0-9]`` -> ``-``, 32 caracteres max, ``dessin`` en
+    repli) : une intention hostile (``../fuite``, NUL, backslash...) ne peut
+    ni sortir du dossier IA ni produire un segment interdit. Le resultat est
+    re-valide par ``normaliser_relatif`` et la boucle anti-collision (suffixe
+    aleatoire regenere, 100 essais) garantit l'absence d'ecrasement.
+
+    ``horodatage``/``alea`` ne servent qu'aux tests (determinisme).
+    """
+    base = re.sub(r"[^a-z0-9]+", "-", (prefixe or "").lower()).strip("-")[:32]
+    if not base:
+        base = "dessin"
+    horo = horodatage or time.strftime("%Y%m%d-%H%M%S")
+    horo = re.sub(r"[^0-9-]+", "", horo)[:15] or time.strftime("%Y%m%d-%H%M%S")
+    racine = racine_physique()
+    for _ in range(100):
+        suffixe = alea or secrets.token_hex(3)
+        alea = None  # regenere a chaque essai en cas de collision
+        candidat = f"{DOSSIER_IA}/{base}-{horo}-{suffixe}{EXTENSION}"
+        relatif = normaliser_relatif(candidat, fichier=True)
+        if not _resoudre(racine, relatif).exists():
+            return relatif
+    raise ErreurBibliotheque("autosave impossible (collisions repetees)")
 
 
 def _resoudre(racine: Path, relatif: str) -> Path:

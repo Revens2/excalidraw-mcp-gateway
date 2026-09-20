@@ -6,10 +6,14 @@ execute ici, sur la racine durable ``/srv/excalidraw/data/bibliotheque``
 presentee comme ``Excalidraw``.
 
 ``create_view`` reste un outil upstream, mais sa definition annoncee est
-enrichie d'un parametre optionnel ``enregistrer_sous`` : sans lui, relais
-verbatim (comportement historique) ; avec lui, la passerelle relaye vers
-l'upstream, relit le checkpoint genere, persiste un ``.excalidraw`` standard et
-renvoie un identifiant/URL interne ``ouvrir dans Excalidraw``.
+enrichie d'un parametre optionnel ``enregistrer_sous`` : avec lui, la
+passerelle relaye vers l'upstream, relit le checkpoint genere, persiste un
+``.excalidraw`` standard au chemin demande (prioritaire) ; sans lui,
+autosave automatique sous ``Excalidraw/ia/`` (nom horodate sans collision).
+Dans les deux cas la reponse est enrichie d'un identifiant/URL interne
+``ouvrir dans Excalidraw`` (editeur principal), et le rendu upstream n'est
+jamais sacrifie : un echec de persistance est signale dans la reponse, rendu
+preserve.
 """
 
 from __future__ import annotations
@@ -38,9 +42,13 @@ class ContexteLocal:
 
 
 def url_ouverture(ctx: ContexteLocal, chemin_relatif: str) -> str:
-    """URL interne « ouvrir dans Excalidraw » pour un chemin relatif."""
+    """URL interne « ouvrir dans Excalidraw » pour un chemin relatif.
+
+    Pointe vers l'editeur principal integre (actions distantes + locales),
+    avec deep-link ``#/<chemin>`` charge automatiquement.
+    """
     base = (ctx.base_ouverture or "https://mymcps.duckdns.org").rstrip("/")
-    return f"{base}/excalidraw/bibliotheque#/{chemin_relatif}"
+    return f"{base}/excalidraw/editeur#/{chemin_relatif}"
 
 
 def _schema_objet(proprietes: dict, requis: list[str], description: str = "") -> dict:
@@ -154,14 +162,17 @@ def _etendre_create_view(outil: dict) -> bool:
                     "type": "string",
                     "description": (
                         "Persiste le diagramme genere dans la bibliotheque `Excalidraw` "
-                        "(ex. `rag/schema.excalidraw`). Optionnel : sans lui, simple rendu."
+                        "(ex. `rag/schema.excalidraw`). Prioritaire quand fourni. "
+                        "Sans lui, autosave automatique sous `Excalidraw/ia/`."
                     ),
                 },
             },
             "required": ["elements"],
         }
         outil["description"] = (outil.get("description") or "") + (
-            " Option `enregistrer_sous` : persiste le diagramme dans la bibliotheque distante."
+            " Persistance serveur : `enregistrer_sous` (ex. `rag/schema.excalidraw`) "
+            "persiste au chemin demande ; sans lui, autosave automatique sous "
+            "`Excalidraw/ia/`. Fichier + URL d'ouverture renvoyes dans la reponse."
         )
         return True
     proprietes = schema.get("properties")
@@ -171,7 +182,8 @@ def _etendre_create_view(outil: dict) -> bool:
         "type": "string",
         "description": (
             "Persiste le diagramme genere dans la bibliotheque `Excalidraw` "
-            "(ex. `rag/schema.excalidraw`). Optionnel : sans lui, simple rendu."
+            "(ex. `rag/schema.excalidraw`). Prioritaire quand fourni. "
+            "Sans lui, autosave automatique sous `Excalidraw/ia/`."
         ),
     }
     return True

@@ -70,6 +70,7 @@ def _config() -> tuple[str, str, int, str, str]:
 
 _journal_biblio = logging.getLogger("uvicorn.error")
 _PAGE_BIBLIOTHEQUE = Path(__file__).resolve().parent / "statique" / "bibliotheque.html"
+_PAGE_EDITEUR = Path(__file__).resolve().parent / "statique" / "editeur.html"
 
 
 async def _page_bibliotheque(_: Request) -> HTMLResponse:
@@ -78,6 +79,15 @@ async def _page_bibliotheque(_: Request) -> HTMLResponse:
         html = _PAGE_BIBLIOTHEQUE.read_text(encoding="utf-8")
     except OSError:
         return HTMLResponse("bibliotheque indisponible", status_code=500)  # type: ignore[return-value]
+    return HTMLResponse(html)
+
+
+async def _page_editeur(_: Request) -> HTMLResponse:
+    """Editeur principal integre (distant + local, publique ; voir /bibliotheque)."""
+    try:
+        html = _PAGE_EDITEUR.read_text(encoding="utf-8")
+    except OSError:
+        return HTMLResponse("editeur indisponible", status_code=500)  # type: ignore[return-value]
     return HTMLResponse(html)
 
 
@@ -235,6 +245,8 @@ def construire_application(
         ),
         # Bibliotheque distante : page + API fichiers (jeton Bearer, voir EXCALIDRAW_BIBLIO_TOKEN).
         Route("/bibliotheque", _page_bibliotheque, methods=["GET"]),
+        # Editeur principal integre : distant + local (meme API, deep-link #/<chemin>).
+        Route("/editeur", _page_editeur, methods=["GET"]),
         Route("/api/liste", _api_liste, methods=["GET"]),
         Route("/api/document", _api_document, methods=["GET", "PUT"]),
         Route("/api/dossiers", _api_dossiers, methods=["POST"]),

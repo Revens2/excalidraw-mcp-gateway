@@ -2,8 +2,9 @@
 
 Couvre : confinement des chemins (traversal, liens symboliques), CRUD,
 politique d'outils, injection tools/list, outils locaux servis sans upstream,
-`create_view` + `enregistrer_sous` (relais puis persistance, rendu preserve en
-cas d'echec), compatibilite `create_view` historique, et API HTTP (jeton).
+`create_view` systematiquement persiste (`enregistrer_sous` prioritaire,
+sinon autosave `ia/` : nom sur, sans collision, rendu preserve et echec
+signale), page `/editeur` (4 actions), et API HTTP (jeton).
 """
 
 from __future__ import annotations
@@ -205,7 +206,7 @@ _CHECKPOINT_ELEMENTS = [{"type": "rectangle", "id": "r9", "x": 1, "y": 2,
                          "width": 10, "height": 10}]
 
 
-def _serveur_stub():
+def _serveur_stub(creer_sans_checkpoint=False):
     recus: list[dict] = []
 
     async def _post(request):
@@ -241,6 +242,14 @@ def _serveur_stub():
             recus.append({"name": nom, "args": args})
             if nom == "create_view":
                 assert "enregistrer_sous" not in args, "le parametre local ne doit pas fuiter"
+                if creer_sans_checkpoint:
+                    return JSONResponse(
+                        {"jsonrpc": "2.0", "id": id_,
+                         "result": {
+                             "content": [{"type": "text",
+                                          "text": "Diagram displayed! (no checkpoint)."}],
+                             "structuredContent": {}}},
+                        headers={"mcp-session-id": session})
                 return JSONResponse(
                     {"jsonrpc": "2.0", "id": id_,
                      "result": {
@@ -382,6 +391,9 @@ def test_create_view_persistant_bout_en_bout(environ):
                 assert "Checkpoint" in texte and "Excalidraw/rag/ia.excalidraw" in texte
                 assert "url_ouverture" in corps["result"]["structuredContent"]
                 assert corps["result"]["structuredContent"]["fichier"] == "Excalidraw/rag/ia.excalidraw"
+                assert corps["result"]["structuredContent"]["persistance_ok"] is True
+                assert corps["result"]["structuredContent"]["enregistrement_automatique"] is False
+                assert "/excalidraw/editeur#/" in corps["result"]["structuredContent"]["url_ouverture"]
                 # Le parametre local n'a pas fuite vers l'upstream.
                 assert recus[0]["name"] == "create_view"
                 assert "enregistrer_sous" not in recus[0]["args"]
@@ -395,10 +407,75 @@ def test_create_view_persistant_bout_en_bout(environ):
     _courir(_t())
 
 
-def test_create_view_historique_inchange(environ):
-    """Sans `enregistrer_sous` : relais verbatim, aucun fichier cree."""
+def test_autosave_nom_sur_et_sans_collision(environ):
+    p1 = bibliotheque.generer_autosave(horodatage="20260916-003000", alea="a1b2c3")
+    assert p1 == "ia/dessin-20260916-003000-a1b2c3.excalidraw"
+    # Prefixe hostile assaini : confine sous ia/, aucun segment interdit.
+    hostile = bibliotheque.generer_autosave(
+        prefixe="../../fuite\x00\\X", horodatage="20260916-003000", alea="a1b2c3")
+    assert hostile.startswith("ia/") and ".." not in hostile and "\\" not in hostile
+    bibliotheque.normaliser_relatif(hostile, fichier=True)
+    # Prefixe vide ou symboles seuls -> repli "dessin".
+    assert bibliotheque.generer_autosave(
+        prefixe="!!!", horodatage="20260916-003000", alea="zz").startswith("ia/dessin-")
+    # Collision -> nouveau suffixe, jamais d'ecrasement.
+    doc = bibliotheque.construire_document(ELEMENTS_DEMO)
+    bibliotheque.enregistrer(p1, doc)
+    p2 = bibliotheque.generer_autosave(horodatage="20260916-003000", alea="a1b2c3")
+    assert p2 != p1 and p2.startswith("ia/dessin-20260916-003000-")
+    bibliotheque.normaliser_relatif(p2, fichier=True)
+
+
+def test_create_view_autosave_par_defaut(environ):
+    """Sans `enregistrer_sous` : autosave sous Excalidraw/ia/ + URL editeur principal."""
     async def _t():
         serveur, url, sock, recus = _serveur_stub()
+        try:
+            os.environ["EXCALIDRAW_MCP_UPSTREAM"] = url
+            async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
+                ent = _entetes(JETON_ECRITURE)
+                r = await c.post("/mcp", content=_json_rpc("initialize", 1), headers=ent)
+                session = r.headers["mcp-session-id"]
+
+                def _creer(i):
+                    return c.post("/mcp", content=_json_rpc(
+                        "tools/call", i, {"name": "create_view",
+                                          "arguments": {"elements": json.dumps(ELEMENTS_DEMO)}}),
+                        headers={**ent, "mcp-session-id": session})
+
+                r = await _creer(3)
+                corps = r.json()
+                assert "error" not in corps, corps
+                texte = corps["result"]["content"][0]["text"]
+                # Rendu preserve + mention du fichier auto.
+                assert "Checkpoint" in texte and "Excalidraw/ia/" in texte
+                structure = corps["result"]["structuredContent"]
+                assert structure["persistance_ok"] is True
+                assert structure["enregistrement_automatique"] is True
+                assert structure["fichier"].startswith("Excalidraw/ia/")
+                assert structure["fichier"].endswith(".excalidraw")
+                assert "/excalidraw/editeur#/" in structure["url_ouverture"]
+                # Le parametre local ne fuit jamais vers l'upstream.
+                assert recus[0]["name"] == "create_view"
+                assert "enregistrer_sous" not in recus[0]["args"]
+                # Fichier = elements resolus du checkpoint (r9), pas la requete brute.
+                relu = bibliotheque.charger(structure["fichier"].removeprefix("Excalidraw/"))
+                assert relu["document"]["elements"] == _CHECKPOINT_ELEMENTS
+                # Second appel sans chemin -> second fichier (pas d'ecrasement).
+                r2 = await _creer(4)
+                f2 = r2.json()["result"]["structuredContent"]["fichier"]
+                assert f2 != structure["fichier"] and f2.startswith("Excalidraw/ia/")
+        finally:
+            serveur.should_exit = True
+            sock.close()
+
+    _courir(_t())
+
+
+def test_create_view_persistance_signalee_rendu_preserve(environ):
+    """Rendu sans checkpoint : echec signale, rendu intact, aucun fichier."""
+    async def _t():
+        serveur, url, sock, recus = _serveur_stub(creer_sans_checkpoint=True)
         try:
             os.environ["EXCALIDRAW_MCP_UPSTREAM"] = url
             async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
@@ -410,12 +487,31 @@ def test_create_view_historique_inchange(environ):
                                       "arguments": {"elements": json.dumps(ELEMENTS_DEMO)}}),
                     headers={**ent, "mcp-session-id": session})
                 corps = r.json()
-                assert "Checkpoint" in corps["result"]["content"][0]["text"]
-                assert "url_ouverture" not in r.text
+                assert "error" not in corps, corps
+                texte = corps["result"]["content"][0]["text"]
+                assert "Diagram displayed!" in texte  # rendu preserve
+                assert "Persistance distante echouee" in texte  # echec signale
+                assert corps["result"]["structuredContent"]["persistance_ok"] is False
                 assert list((bibliotheque.racine_physique()).glob("**/*.excalidraw")) == []
         finally:
             serveur.should_exit = True
             sock.close()
+
+    _courir(_t())
+
+
+def test_page_editeur_expose_quatre_actions(environ):
+    async def _t():
+        async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
+            r = await c.get("/editeur")
+            assert r.status_code == 200, r.status_code
+            for action in ("Ouvrir distant", "Sauvegarder distant",
+                           "Ouvrir local", "Sauvegarder local"):
+                assert action in r.text, action
+            # Composant officiel epingle (memes versions que /bibliotheque).
+            assert "@excalidraw/excalidraw@0.18.0" in r.text
+            # Deep-link MCP supporte.
+            assert 'location.hash.startsWith("#/")' in r.text
 
     _courir(_t())
 
