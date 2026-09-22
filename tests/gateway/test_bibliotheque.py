@@ -212,6 +212,23 @@ def test_politique_biblio():
     assert p.autoriser_call("outil-xyz", full) is not None
 
 
+def test_validate_view_est_lecture_seule():
+    """`validate_view` (2026-09-22) : diagnostic geometrique, jamais une ecriture.
+
+    L'outil relit un checkpoint et renvoie un rapport deterministe : aucune
+    donnee n'est creee, aucune sortie vers l'exterieur. Il doit donc etre
+    annonce et executable avec la seule portee lecture, et reste refuse sans
+    portee (fail-closed comme tout le reste).
+    """
+    p = PolitiqueOutils()
+    lecture = {SCOPES_LECTURE}
+    assert "validate_view" in OUTILS_LECTURE
+    assert "validate_view" not in OUTILS_ECRITURE
+    assert "validate_view" in p.visibles(lecture)
+    assert p.autoriser_call("validate_view", lecture) is None
+    assert p.autoriser_call("validate_view", set()) is not None
+
+
 def test_fusion_definitions():
     resultat = {"tools": [{"name": "create_view", "description": "rendu",
                            "inputSchema": {"type": "object",
@@ -264,6 +281,7 @@ def _serveur_stub(creer_sans_checkpoint=False):
                                       "required": ["elements"]}},
                      {"name": "save_checkpoint", "description": "s"},
                      {"name": "read_checkpoint", "description": "r"},
+                     {"name": "validate_view", "description": "v"},
                      {"name": "export_to_excalidraw", "description": "e"},
                  ]}},
                 headers={"mcp-session-id": session})
