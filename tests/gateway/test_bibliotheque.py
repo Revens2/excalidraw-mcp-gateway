@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import socket
+import re
 import threading
 import time
 import uuid
@@ -571,8 +572,13 @@ def test_page_editeur_ui_privee_sans_jeton(environ):
             for action in ("Ouvrir", "Enregistrer", "Nouveau"):
                 assert action in r.text, action
             # Aucun secret cote navigateur : ni champ, ni stockage, ni header.
+            # (`localStorage` n'est pas interdit en soi : le commit 8f6e00b y
+            # persiste la seule preference de theme `excalidraw-theme`. Ce qui
+            # doit etre prouve, c'est qu'aucun jeton n'y transite — l'assertion
+            # precedente testait le mot, pas l'intention, et echouait depuis.)
             assert "excali_jeton" not in r.text
-            assert "localStorage" not in r.text
+            for usage in re.findall(r"localStorage[^;\n]{0,160}", r.text):
+                assert "jeton" not in usage and "token" not in usage.lower(), usage
             assert "Authorization" not in r.text
             assert "EXCALIDRAW_BIBLIO_TOKEN" not in r.text
             assert 'type="password"' not in r.text
