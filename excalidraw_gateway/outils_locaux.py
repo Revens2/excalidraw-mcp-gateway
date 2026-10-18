@@ -19,8 +19,10 @@ preserve.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
+from urllib.parse import quote
 
 import httpx
 
@@ -29,6 +31,12 @@ from excalidraw_gateway.bibliotheque import ErreurBibliotheque
 
 # Parametre d'extension de create_view (persistance du diagramme genere).
 PARAM_PERSISTANCE = "enregistrer_sous"
+
+# URL de base de l'editeur (sans le deep-link ``#/<chemin>``), parametrable
+# sans toucher au code : en production privee, vaut l'editeur du vhost
+# NetBird (ex. ``http://10.200.114.203:8130/editeur``). Absente, on
+# retombe sur le montage public historique (compatibilite).
+NOM_ENV_URL_EDITEUR = "EXCALIDRAW_URL_EDITEUR"
 
 COMPTEUR_APPELS = "biblio_appel_local"
 
@@ -44,11 +52,31 @@ class ContexteLocal:
 def url_ouverture(ctx: ContexteLocal, chemin_relatif: str) -> str:
     """URL interne « ouvrir dans Excalidraw » pour un chemin relatif.
 
-    Pointe vers l'editeur principal integre (actions distantes + locales),
-    avec deep-link ``#/<chemin>`` charge automatiquement.
+    Pointe vers l'editeur principal integre, avec deep-link ``#/<chemin>``
+    charge automatiquement. Si ``EXCALIDRAW_URL_EDITEUR`` est defini
+    (editeur prive NetBird, ex. ``http://10.200.114.203:8130/editeur``),
+    il est utilise tel quel ; sinon, repli historique sur le montage
+    public ``<base>/excalidraw/editeur``.
+
+    Le fragment est encode par segment (espaces et caracteres usuels des
+    noms de fichiers supportes, ``/`` conserves comme separateurs) :
+    un lien brut avec espaces casserait le markdown ChatGPT et le hash.
+    L'editeur decode par segment (``decoderChemin``).
     """
+    fragment = "/".join(quote(seg, safe="") for seg in chemin_relatif.split("/"))
+    prefixe = os.environ.get(NOM_ENV_URL_EDITEUR, "").strip().rstrip("/")
+    # Robustesse 2026-09-17 (constat ChatGPT E2E : `.../editeurn#/...`) : un
+    # fichier .env edite a la main peut contenir une sequence d'echappement
+    # litterale (backslash + lettre, ex. ``\\n``) au lieu d'un vrai saut de
+    # ligne. ``strip()`` ne la retire pas. Ces suffixes ne sont jamais
+    # legitimes en fin d'URL d'editeur : on les degage avant usage.
+    while prefixe.endswith("\\n") or prefixe.endswith("\\r") or prefixe.endswith("\\t"):
+        prefixe = prefixe[:-2].strip().rstrip("/").rstrip("\\").strip().rstrip("/")
+    prefixe = prefixe.rstrip("\\").strip().rstrip("/")
+    if prefixe:
+        return f"{prefixe}#/{fragment}"
     base = (ctx.base_ouverture or "https://mymcps.duckdns.org").rstrip("/")
-    return f"{base}/excalidraw/editeur#/{chemin_relatif}"
+    return f"{base}/excalidraw/editeur#/{fragment}"
 
 
 def _schema_objet(proprietes: dict, requis: list[str], description: str = "") -> dict:

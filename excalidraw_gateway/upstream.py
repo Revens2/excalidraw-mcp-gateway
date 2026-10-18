@@ -48,10 +48,12 @@ from excalidraw_gateway import bibliotheque
 from excalidraw_gateway.bibliotheque import ErreurBibliotheque
 from excalidraw_gateway.outils_locaux import (
     PARAM_PERSISTANCE,
+    ContexteLocal,
     extraire_checkpoint_id,
     fusionner_definitions,
     lire_checkpoint_elements,
     traiter_outil_local,
+    url_ouverture as outils_url_ouverture,
 )
 from excalidraw_gateway.politique import OUTILS_LOCAUX, PolitiqueOutils
 
@@ -565,8 +567,6 @@ class ProxyMCP:
         self, send: Send, id_rpc: Any, nom: str, args: dict[str, Any]
     ) -> None:
         """Execute un outil `library_*` : l'upstream n'est jamais contacte."""
-        from excalidraw_gateway.outils_locaux import ContexteLocal
-
         ctx = ContexteLocal(upstream=self._base_url, base_ouverture=self._base_ouverture)
         try:
             resultat = await traiter_outil_local(nom, args, ctx, self._http())
@@ -753,8 +753,8 @@ class ProxyMCP:
                 send, statut, entetes_rep, self._reencoder_enveloppe(enveloppe, ctype)
             )
             return
-        base = self._base_ouverture or "https://mymcps.duckdns.org"
-        url_ouverture = f"{base}/excalidraw/editeur#/{rel}"
+        ctx_ouverture = ContexteLocal(upstream=self._base_url, base_ouverture=self._base_ouverture)
+        url_ouverture = outils_url_ouverture(ctx_ouverture, rel)
         ligne = (
             f"\nFichier enregistre : Excalidraw/{rel} ({len(elements)} elements).\n"
             f"Ouvrir dans Excalidraw : {url_ouverture}"

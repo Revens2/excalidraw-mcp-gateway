@@ -31,10 +31,13 @@ from dataclasses import dataclass, field
 from excalidraw_gateway.oauth import PORTEE, PORTEE_ECRITURE
 
 # Lecture seule : aucune donnee n'est creee ni envoyee a l'exterieur.
+# `validate_view` (2026-09-22) relit un checkpoint et renvoie un rapport
+# geometrique deterministe : aucune ecriture, aucune sortie de donnee.
 OUTILS_LECTURE: frozenset[str] = frozenset(
     {
         "read_me",
         "read_checkpoint",
+        "validate_view",
     }
 )
 

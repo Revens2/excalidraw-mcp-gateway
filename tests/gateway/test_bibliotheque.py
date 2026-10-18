@@ -4,7 +4,7 @@ Couvre : confinement des chemins (traversal, liens symboliques), CRUD,
 politique d'outils, injection tools/list, outils locaux servis sans upstream,
 `create_view` systematiquement persiste (`enregistrer_sous` prioritaire,
 sinon autosave `ia/` : nom sur, sans collision, rendu preserve et echec
-signale), page `/editeur` (4 actions), et API HTTP (jeton).
+signale), page `/editeur` (UI privee sans jeton), et API HTTP (jeton).
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import socket
+import re
 import threading
 import time
 import uuid
@@ -29,8 +30,11 @@ from excalidraw_gateway.app import construire_application
 from excalidraw_gateway.bibliotheque import ErreurBibliotheque
 from excalidraw_gateway.oauth import hacher_phrase
 from excalidraw_gateway.outils_locaux import (
+    NOM_ENV_URL_EDITEUR,
+    ContexteLocal,
     extraire_checkpoint_id,
     fusionner_definitions,
+    url_ouverture,
 )
 from excalidraw_gateway.politique import (
     OUTILS_BIBLIO_ECRITURE,
@@ -54,6 +58,33 @@ ELEMENTS_DEMO = [
      "label": {"text": "RAG", "fontSize": 20}},
 ]
 
+# Apres nettoyage + restauration : le pseudo-element `cameraUpdate` (cadrage
+# upstream, jamais un element de scene) n'est pas persiste, et le rectangle
+# minimaliste est complete (champs exiges par l'editeur officiel).
+ELEMENTS_SCENE_ATTENDUS = [ELEMENTS_DEMO[1]]
+
+
+def _assert_rectangle_restaure(elements):
+    """Verifie la restauration serveur + l'expansion `label` -> texte lie officiel."""
+    # excalidraw-mcp#22 : le shorthand `label` (squelette) n'est jamais persiste
+    # tel quel ; il est expanse en element texte lie (containerId + boundElements).
+    assert len(elements) == 2
+    r = elements[0]
+    assert r["type"] == "rectangle" and r["id"] == "r1"
+    assert r["x"] == 100 and r["width"] == 200
+    assert "label" not in r, "shorthand label ne doit jamais etre persiste"
+    assert isinstance(r["seed"], int) and isinstance(r["versionNonce"], int)
+    assert r["boundElements"] == [{"id": "r1_label", "type": "text"}] and r["groupIds"] == []
+    assert r["isDeleted"] is False and r["locked"] is False
+    assert r["angle"] == 0 and r["opacity"] == 100
+    t = elements[1]
+    assert t["type"] == "text" and t["id"] == "r1_label"
+    assert t["text"] == "RAG" and t["originalText"] == "RAG"
+    assert t["containerId"] == "r1" and t["fontSize"] == 20
+    assert t["fontFamily"] == 1 and t["textAlign"] == "center"
+    assert "label" not in t
+    return r
+
 
 @pytest.fixture()
 def environ(tmp_path, monkeypatch):
@@ -64,6 +95,8 @@ def environ(tmp_path, monkeypatch):
     monkeypatch.setenv("EXCALIDRAW_MCP_CONSENT_HASH", hacher_phrase(PHRASE))
     monkeypatch.setenv("EXCALIDRAW_BIBLIO_DIR", str(tmp_path / "biblio"))
     monkeypatch.setenv("EXCALIDRAW_BIBLIO_TOKEN", JETON_BIBLIO)
+    # Les tests du montage historique ne doivent jamais voir l'URL privee.
+    monkeypatch.delenv(NOM_ENV_URL_EDITEUR, raising=False)
     return tmp_path
 
 
@@ -152,7 +185,7 @@ def test_crud_complet(environ):
     assert vue["dossiers"] == ["sous"]
     assert [f["logique"] for f in vue["fichiers"]] == ["Excalidraw/rag/schema.excalidraw"]
     relu = bibliotheque.charger("rag/schema.excalidraw")
-    assert relu["document"]["elements"] == ELEMENTS_DEMO
+    _assert_rectangle_restaure(relu["document"]["elements"])
     dep = bibliotheque.deplacer("rag/schema.excalidraw", "rag/schema-v2.excalidraw")
     assert dep["vers"] == "Excalidraw/rag/schema-v2.excalidraw"
     with pytest.raises(ErreurBibliotheque):
@@ -178,6 +211,23 @@ def test_politique_biblio():
     assert p.autoriser_call("library_save", full) is None
     assert p.autoriser_call("library_move", full) is None
     assert p.autoriser_call("outil-xyz", full) is not None
+
+
+def test_validate_view_est_lecture_seule():
+    """`validate_view` (2026-09-22) : diagnostic geometrique, jamais une ecriture.
+
+    L'outil relit un checkpoint et renvoie un rapport deterministe : aucune
+    donnee n'est creee, aucune sortie vers l'exterieur. Il doit donc etre
+    annonce et executable avec la seule portee lecture, et reste refuse sans
+    portee (fail-closed comme tout le reste).
+    """
+    p = PolitiqueOutils()
+    lecture = {SCOPES_LECTURE}
+    assert "validate_view" in OUTILS_LECTURE
+    assert "validate_view" not in OUTILS_ECRITURE
+    assert "validate_view" in p.visibles(lecture)
+    assert p.autoriser_call("validate_view", lecture) is None
+    assert p.autoriser_call("validate_view", set()) is not None
 
 
 def test_fusion_definitions():
@@ -232,6 +282,7 @@ def _serveur_stub(creer_sans_checkpoint=False):
                                       "required": ["elements"]}},
                      {"name": "save_checkpoint", "description": "s"},
                      {"name": "read_checkpoint", "description": "r"},
+                     {"name": "validate_view", "description": "v"},
                      {"name": "export_to_excalidraw", "description": "e"},
                  ]}},
                 headers={"mcp-session-id": session})
@@ -362,7 +413,7 @@ def test_outils_locaux_sans_upstream(environ):
                 contenu = json.loads(
                     (bibliotheque.racine_physique() / "rag" / "schema-v2.excalidraw").read_text())
                 assert contenu["type"] == "excalidraw"
-                assert contenu["elements"] == ELEMENTS_DEMO
+                _assert_rectangle_restaure(contenu["elements"])
         finally:
             serveur.should_exit = True
             sock.close()
@@ -397,9 +448,13 @@ def test_create_view_persistant_bout_en_bout(environ):
                 # Le parametre local n'a pas fuite vers l'upstream.
                 assert recus[0]["name"] == "create_view"
                 assert "enregistrer_sous" not in recus[0]["args"]
-                # Fichier = elements resolus du checkpoint (r9), pas la requete brute.
+                # Fichier = elements resolus du checkpoint (r9), restaures
+                # (le stub renvoie un rectangle minimaliste, complete a l'ecriture).
                 relu = bibliotheque.charger("rag/ia.excalidraw")
-                assert relu["document"]["elements"] == _CHECKPOINT_ELEMENTS
+                assert len(relu["document"]["elements"]) == 1
+                r9 = relu["document"]["elements"][0]
+                assert (r9["id"], r9["x"], r9["width"]) == ("r9", 1, 10)
+                assert isinstance(r9["seed"], int) and r9["boundElements"] == []
         finally:
             serveur.should_exit = True
             sock.close()
@@ -458,9 +513,10 @@ def test_create_view_autosave_par_defaut(environ):
                 # Le parametre local ne fuit jamais vers l'upstream.
                 assert recus[0]["name"] == "create_view"
                 assert "enregistrer_sous" not in recus[0]["args"]
-                # Fichier = elements resolus du checkpoint (r9), pas la requete brute.
+                # Fichier = elements resolus du checkpoint (r9), restaures.
                 relu = bibliotheque.charger(structure["fichier"].removeprefix("Excalidraw/"))
-                assert relu["document"]["elements"] == _CHECKPOINT_ELEMENTS
+                assert len(relu["document"]["elements"]) == 1
+                assert relu["document"]["elements"][0]["id"] == "r9"
                 # Second appel sans chemin -> second fichier (pas d'ecrasement).
                 r2 = await _creer(4)
                 f2 = r2.json()["result"]["structuredContent"]["fichier"]
@@ -500,20 +556,168 @@ def test_create_view_persistance_signalee_rendu_preserve(environ):
     _courir(_t())
 
 
-def test_page_editeur_expose_quatre_actions(environ):
+def test_page_editeur_ui_privee_sans_jeton(environ):
+    """Editeur : CSS officiel, actions discretes, aucun secret navigateur."""
     async def _t():
         async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
             r = await c.get("/editeur")
             assert r.status_code == 200, r.status_code
-            for action in ("Ouvrir distant", "Sauvegarder distant",
-                           "Ouvrir local", "Sauvegarder local"):
-                assert action in r.text, action
-            # Composant officiel epingle (memes versions que /bibliotheque).
+            # Feuille de style officielle du composant (diagnostic 2026-09-16 :
+            # son absence produisait le rendu brut).
+            assert "@excalidraw/excalidraw@0.18.0/dist/prod/index.css" in r.text
+            assert 'integrity="sha384-' in r.text  # SRI epargne CDN altere
             assert "@excalidraw/excalidraw@0.18.0" in r.text
+            # Actions bibliotheque discretes integrees au canvas officiel.
+            assert "renderTopRightUI" in r.text
+            for action in ("Ouvrir", "Enregistrer", "Nouveau"):
+                assert action in r.text, action
+            # Aucun secret cote navigateur : ni champ, ni stockage, ni header.
+            # (`localStorage` n'est pas interdit en soi : le commit 8f6e00b y
+            # persiste la seule preference de theme `excalidraw-theme`. Ce qui
+            # doit etre prouve, c'est qu'aucun jeton n'y transite — l'assertion
+            # precedente testait le mot, pas l'intention, et echouait depuis.)
+            assert "excali_jeton" not in r.text
+            for usage in re.findall(r"localStorage[^;\n]{0,160}", r.text):
+                assert "jeton" not in usage and "token" not in usage.lower(), usage
+            assert "Authorization" not in r.text
+            assert "EXCALIDRAW_BIBLIO_TOKEN" not in r.text
+            assert 'type="password"' not in r.text
             # Deep-link MCP supporte.
             assert 'location.hash.startsWith("#/")' in r.text
 
     _courir(_t())
+
+
+def test_page_bibliotheque_redirige_editeur(environ):
+    """L'ancienne page /bibliotheque redirige vers l'editeur integre."""
+    async def _t():
+        async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
+            r = await c.get("/bibliotheque", follow_redirects=False)
+            assert r.status_code in (301, 302), r.status_code
+            assert r.headers["location"] == "/editeur"
+
+    _courir(_t())
+
+
+def test_construire_document_filtre_camera_update(environ):
+    """Le pseudo-element `cameraUpdate` upstream n'est jamais persiste."""
+    doc = bibliotheque.construire_document(ELEMENTS_DEMO)
+    _assert_rectangle_restaure(doc["elements"])
+    assert all(e.get("type") != "cameraUpdate" for e in doc["elements"])
+    # Checkpoint ne contenant QUE du cadrage -> refuse (fail-closed),
+    # l'appelant signale l'echec en preservant le rendu.
+    with pytest.raises(ErreurBibliotheque):
+        bibliotheque.construire_document([ELEMENTS_DEMO[0]])
+    with pytest.raises(ErreurBibliotheque):
+        bibliotheque.construire_document([])
+
+
+def test_enregistrer_filtre_camera_update_quel_que_soit_le_chemin(environ):
+    """`enregistrer` (API PUT, outils, autosave) ne persiste jamais cameraUpdate."""
+    doc = {"type": "excalidraw", "version": 2, "elements": ELEMENTS_DEMO,
+           "appState": {}, "files": {}}
+    bibliotheque.enregistrer("rag/nettoye.excalidraw", doc)
+    relu = bibliotheque.charger("rag/nettoye.excalidraw")
+    _assert_rectangle_restaure(relu["document"]["elements"])
+    # Document ne contenant que du cadrage -> 400 (fail-closed).
+    with pytest.raises(ErreurBibliotheque):
+        bibliotheque.enregistrer("rag/vide.excalidraw",
+                                 {"type": "excalidraw", "version": 2,
+                                  "elements": [ELEMENTS_DEMO[0]],
+                                  "appState": {}, "files": {}})
+
+
+def test_restaurer_element_minimaliste_upstream(environ):
+    """Elements minimalistes upstream -> scene standard (valeurs preservees)."""
+    sparse = {"type": "rectangle", "id": "z", "x": 25, "y": 90,
+              "width": 1550, "height": 160, "strokeColor": "#f59e0b",
+              "roundness": {"type": 3}}
+    r = bibliotheque.restaurer_element(dict(sparse), 0)
+    assert r["x"] == 25 and r["width"] == 1550 and r["roundness"] == {"type": 3}
+    assert isinstance(r["seed"], int) and r["isDeleted"] is False
+    assert r["boundElements"] == [] and r["index"] == "a0"
+    # Texte minimaliste : complete en texte officiel (estimation serveur,
+    # l'editeur affine via restore+refreshDimensions).
+    t = bibliotheque.restaurer_element(
+        {"type": "text", "x": 1, "y": 2, "text": "hello", "fontSize": 20}, 3)
+    assert t["text"] == "hello" and t["originalText"] == "hello"
+    assert t["fontFamily"] == 1 and t["containerId"] is None
+    assert t["width"] > 0 and t["height"] > 0 and t["index"] == "a3"
+    # Fleche sans points : repli geometrique.
+    f = bibliotheque.restaurer_element(
+        {"type": "arrow", "x": 0, "y": 0, "width": 10, "height": 5}, 0)
+    assert f["points"] == [[0, 0], [10.0, 5.0]]
+    # Inexploitables : type inconnu, geometrie absurde, texte sans texte,
+    # image sans fichier, cameraUpdate.
+    assert bibliotheque.restaurer_element({"type": "nope", "x": 0, "y": 0}, 0) is None
+    assert bibliotheque.restaurer_element({"type": "rectangle", "x": 0}, 0) is None
+    assert bibliotheque.restaurer_element({"type": "text", "x": 0, "y": 0}, 0) is None
+    assert bibliotheque.restaurer_element(
+        {"type": "image", "x": 0, "y": 0, "width": 1, "height": 1}, 0) is None
+    assert bibliotheque.restaurer_elements(ELEMENTS_DEMO) != []
+    assert all(e["type"] != "cameraUpdate"
+               for e in bibliotheque.restaurer_elements(ELEMENTS_DEMO))
+    assert bibliotheque.restaurer_elements([{"type": "cameraUpdate"}]) == []
+
+
+def test_url_ouverture_encode_espaces(environ, monkeypatch):
+    """Deep-link : espaces et caracteres usuels encodes par segment."""
+    ctx = ContexteLocal(upstream="http://127.0.0.1:9", base_ouverture="https://biblio.example.test")
+    monkeypatch.setenv(NOM_ENV_URL_EDITEUR, "http://10.200.114.203:8130/editeur")
+    assert url_ouverture(ctx, "rag/mon schema (v2).excalidraw") == \
+        "http://10.200.114.203:8130/editeur#/rag/mon%20schema%20%28v2%29.excalidraw"
+    # Chemins simples inchanges (compatibilite des liens existants).
+    assert url_ouverture(ctx, "rag/schema.excalidraw") == \
+        "http://10.200.114.203:8130/editeur#/rag/schema.excalidraw"
+
+
+def test_page_editeur_correctifs_2026_09_17(environ):
+    """Editeur : favicon, icones modale, deep-link robuste, cadrage natif."""
+    async def _t():
+        async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
+            r = await c.get("/editeur")
+            assert r.status_code == 200, r.status_code
+            # Bug 1 — favicon : logomark inline, zero requete reseau.
+            assert 'rel="icon"' in r.text and "data:image/svg+xml" in r.text
+            # Bug 2 — icones modale contraintes explicitement.
+            assert ".entree svg" in r.text and "20px" in r.text
+            assert ".modale-pied" in r.text and ".zone-nom" in r.text
+            # Bug 3 — deep-link : ecoute hashchange + attente API + encodage.
+            assert 'addEventListener("hashchange"' in r.text
+            assert "apiPrete" in r.text
+            assert "encoderChemin" in r.text and "decoderChemin" in r.text
+            # Bug 4 — cadrage natif borne, pseudo-elements filtres, restore officiel.
+            assert "scrollToContent" in r.text and "fitToViewport" in r.text
+            assert "maxZoom" in r.text and "cameraUpdate" in r.text
+            assert "restaurerFn" in r.text
+
+    _courir(_t())
+
+
+def test_url_ouverture_editeur_prive_parametrable(environ, monkeypatch):
+    """Deep-link : EXCALIDRAW_URL_EDITEUR prioritaire, repli historique sinon."""
+    ctx = ContexteLocal(upstream="http://127.0.0.1:9", base_ouverture="https://biblio.example.test")
+    monkeypatch.setenv(NOM_ENV_URL_EDITEUR, "http://10.200.114.203:8130/editeur")
+    assert url_ouverture(ctx, "rag/schema.excalidraw") == \
+        "http://10.200.114.203:8130/editeur#/rag/schema.excalidraw"
+    monkeypatch.delenv(NOM_ENV_URL_EDITEUR)
+    assert url_ouverture(ctx, "rag/schema.excalidraw") == \
+        "https://biblio.example.test/excalidraw/editeur#/rag/schema.excalidraw"
+
+
+def test_url_ouverture_robuste_echappements_2026_09_17(environ, monkeypatch):
+    """Non-regression ChatGPT E2E : sequence ``\\n`` litterale en fin d'env."""
+    ctx = ContexteLocal(upstream="http://127.0.0.1:9", base_ouverture="https://biblio.example.test")
+    # Cas reel constate en prod : `.../editeurn#/...` (backslash-n residuel).
+    monkeypatch.setenv(NOM_ENV_URL_EDITEUR, "http://10.200.114.203:8130/editeur\\n")
+    assert url_ouverture(ctx, "ia/dessin-20260917-213431-2be091.excalidraw") == \
+        "http://10.200.114.203:8130/editeur#/ia/dessin-20260917-213431-2be091.excalidraw"
+    monkeypatch.setenv(NOM_ENV_URL_EDITEUR, "http://10.200.114.203:8130/editeur\\r\\n")
+    assert url_ouverture(ctx, "rag/schema.excalidraw") == \
+        "http://10.200.114.203:8130/editeur#/rag/schema.excalidraw"
+    monkeypatch.setenv(NOM_ENV_URL_EDITEUR, "http://10.200.114.203:8130/editeur/ ")
+    assert url_ouverture(ctx, "rag/schema.excalidraw") == \
+        "http://10.200.114.203:8130/editeur#/rag/schema.excalidraw"
 
 
 def test_biblio_ecriture_refusee_en_lecture(environ):
@@ -549,8 +753,10 @@ def _h_biblio() -> dict[str, str]:
 def test_api_http_jeton_requis_et_roundtrip(environ):
     async def _t():
         async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
-            r = await c.get("/bibliotheque")
-            assert r.status_code == 200 and "Bibliothèque" in r.text
+            r = await c.get("/bibliotheque", follow_redirects=False)
+            assert r.status_code in (301, 302) and r.headers["location"] == "/editeur"
+            r = await c.get("/editeur")
+            assert r.status_code == 200 and "renderTopRightUI" in r.text
             r = await c.get("/api/liste")
             assert r.status_code == 401
             r = await c.get("/api/liste", headers=_h_biblio())
@@ -563,7 +769,7 @@ def test_api_http_jeton_requis_et_roundtrip(environ):
                             headers=_h_biblio())
             assert r.status_code == 200, r.text
             r = await c.get("/api/document?chemin=rag/http.excalidraw", headers=_h_biblio())
-            assert r.json()["document"]["elements"] == ELEMENTS_DEMO
+            _assert_rectangle_restaure(r.json()["document"]["elements"])
             r = await c.get("/api/document?chemin=../fuite.excalidraw", headers=_h_biblio())
             assert r.status_code == 400
             r = await c.put("/api/document?chemin=rag/mauvais.excalidraw",
@@ -571,3 +777,63 @@ def test_api_http_jeton_requis_et_roundtrip(environ):
             assert r.status_code == 400
 
     _courir(_t())
+
+
+# --- fidelite labels (excalidraw-mcp#22, E2E ChatGPT 2026-09-17) -------------------------------
+
+def test_label_fleche_expande_au_milieu(environ):
+    """Une fleche `label:{text}` devient un texte lie au milieu, sans shorthand."""
+    els = [{"type": "arrow", "id": "a1", "x": 340, "y": 240, "width": 130, "height": 0,
+            "points": [[0, 0], [130, 0]], "endArrowhead": "arrow",
+            "label": {"text": "test", "fontSize": 16}}]
+    out = bibliotheque.restaurer_elements(els)
+    assert len(out) == 2
+    fleche, texte = out
+    assert "label" not in fleche
+    assert fleche["boundElements"] == [{"id": "a1_label", "type": "text"}]
+    assert texte["containerId"] == "a1" and texte["text"] == "test"
+    # Milieu geometrique (405, 240) moins demi-taille estimee.
+    assert abs(texte["x"] - (405 - texte["width"] / 2)) < 1e-6
+    assert abs(texte["y"] - (240 - texte["height"] / 2)) < 1e-6
+
+
+def test_label_idempotent_sans_doublon(environ):
+    """Re-restaurer un document deja officiel ne duplique rien."""
+    doc = bibliotheque.construire_document(ELEMENTS_DEMO)
+    assert sum(1 for e in doc["elements"] if e.get("type") == "text") == 1
+    reexp = bibliotheque.restaurer_elements(doc["elements"])
+    assert len(reexp) == len(doc["elements"]) == 2
+    assert all("label" not in e for e in reexp)
+
+
+def test_label_residuel_sur_officiel_retire_sans_doublon(environ):
+    """Shorthand residuel sur document deja officiel : retire, pas de doublon."""
+    doc = bibliotheque.construire_document(ELEMENTS_DEMO)
+    doc["elements"][0]["label"] = {"text": "Autre", "fontSize": 20}
+    out = bibliotheque.restaurer_elements(doc["elements"])
+    assert len(out) == 2
+    assert all("label" not in e for e in out)
+    assert sum(1 for e in out if e.get("type") == "text") == 1
+
+
+def test_preuves_e2e_chatgpt_fidelite(environ):
+    """Les deux preuves E2E doivent rendre tous leurs textes apres expansion."""
+    for premier, second, etiquette in [
+        ("Post-fix URL", "Second box", "test"),
+        ("ChatGPT E2E", "Excalidraw OK", "deep-link"),
+    ]:
+        els = [
+            {"type": "rectangle", "id": "g", "x": 120, "y": 190, "width": 220, "height": 100,
+             "label": {"text": premier, "fontSize": 22}},
+            {"type": "rectangle", "id": "d", "x": 470, "y": 190, "width": 220, "height": 100,
+             "label": {"text": second, "fontSize": 22}},
+            {"type": "arrow", "id": "f", "x": 340, "y": 240, "width": 130, "height": 0,
+             "points": [[0, 0], [130, 0]], "label": {"text": etiquette, "fontSize": 16}},
+        ]
+        out = bibliotheque.restaurer_elements(els)
+        textes = {e["text"] for e in out if e.get("type") == "text"}
+        assert textes == {premier, second, etiquette}
+        assert all("label" not in e for e in out)
+        for e in out:
+            if e.get("type") == "text":
+                assert e.get("containerId") in ("g", "d", "f")

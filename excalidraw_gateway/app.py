@@ -7,6 +7,10 @@ Composition calquee sur ce que fait le SDK `mcp` pour le vault (adr/0015) :
 - page `/consentement` (phrase de passe) ;
 - `/mcp` : middleware d'authentification (OAuth + Bearer statique) puis proxy transparent
   vers le conteneur upstream.
+- `/editeur` + `/api/*` : interface et fichiers, UNIQUEMENT via le reseau
+  prive (vhost nginx sur l'interface NetBird, jamais route en public).
+  L'API exige toujours le Bearer EXCALIDRAW_BIBLIO_TOKEN (fail-closed) :
+  le proxy prive l'injecte cote serveur, le navigateur ne voit aucun secret.
 
 Tout le reste repond 404 : la passerelle n'expose que ce qui doit l'etre.
 """
@@ -27,7 +31,7 @@ from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from starlette.routing import Route
 
 from excalidraw_gateway import bibliotheque
@@ -69,21 +73,21 @@ def _config() -> tuple[str, str, int, str, str]:
 
 
 _journal_biblio = logging.getLogger("uvicorn.error")
-_PAGE_BIBLIOTHEQUE = Path(__file__).resolve().parent / "statique" / "bibliotheque.html"
 _PAGE_EDITEUR = Path(__file__).resolve().parent / "statique" / "editeur.html"
 
 
-async def _page_bibliotheque(_: Request) -> HTMLResponse:
-    """Page bibliotheque distante (publique ; le jeton reste cote navigateur)."""
-    try:
-        html = _PAGE_BIBLIOTHEQUE.read_text(encoding="utf-8")
-    except OSError:
-        return HTMLResponse("bibliotheque indisponible", status_code=500)  # type: ignore[return-value]
-    return HTMLResponse(html)
+async def _page_bibliotheque(_: Request) -> RedirectResponse:
+    """Ancienne page bibliotheque : redirige vers l'editeur integre.
+
+    L'editeur porte le file-browser (modale Ouvrir/Enregistrer) ; une
+    seule UI a maintenir. Le fragment deep-link ``#/<chemin>`` est
+    preserve par le navigateur lors de la redirection.
+    """
+    return RedirectResponse("/editeur", status_code=302)
 
 
 async def _page_editeur(_: Request) -> HTMLResponse:
-    """Editeur principal integre (distant + local, publique ; voir /bibliotheque)."""
+    """Editeur principal integre (prive uniquement, voir docstring module)."""
     try:
         html = _PAGE_EDITEUR.read_text(encoding="utf-8")
     except OSError:
@@ -243,9 +247,11 @@ def construire_application(
             ),
             methods=["GET", "POST", "DELETE", "OPTIONS"],
         ),
-        # Bibliotheque distante : page + API fichiers (jeton Bearer, voir EXCALIDRAW_BIBLIO_TOKEN).
+        # Bibliotheque : editeur integre + API fichiers (prive uniquement).
+        # L'API exige le Bearer EXCALIDRAW_BIBLIO_TOKEN, injecte cote serveur
+        # par le proxy du vhost prive ; le navigateur n'envoie aucun secret.
         Route("/bibliotheque", _page_bibliotheque, methods=["GET"]),
-        # Editeur principal integre : distant + local (meme API, deep-link #/<chemin>).
+        # Editeur principal integre (file-browser + deep-link #/<chemin>).
         Route("/editeur", _page_editeur, methods=["GET"]),
         Route("/api/liste", _api_liste, methods=["GET"]),
         Route("/api/document", _api_document, methods=["GET", "PUT"]),
